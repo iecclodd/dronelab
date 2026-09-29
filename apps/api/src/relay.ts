@@ -24,6 +24,7 @@ export interface RelayConfig {
   maxQueue: number;
   maxResultBytes: number;
   maxSessions: number;
+  providerCallsPerHour: number;
 }
 
 export interface BrowserSession {
@@ -85,6 +86,7 @@ export function configFromEnv(env = process.env): RelayConfig {
     maxQueue: readPositive("RELAY_MAX_QUEUE", 32, 128),
     maxResultBytes: readPositive("RELAY_MAX_RESULT_BYTES", 131_072, 1_048_576),
     maxSessions: readPositive("RELAY_MAX_SESSIONS", 100, 10_000),
+    providerCallsPerHour: readPositive("DRONELAB_PROVIDER_CALLS_PER_HOUR", 60, 10_000),
   };
 }
 
@@ -157,6 +159,16 @@ export class BrowserRelay {
     command.dedupeExpiresAtMs = Math.min(session.expiresAtMs, Date.now() + 60_000);
     this.pruneRequestIds(session);
   }
+  private expectedAuthorityUpdate(name: CanonicalTool, session: SessionState): BrowserAuthority | undefined {
+    switch (name) {
+      case "pause_session": return { generation: session.generation, epoch: session.authorityEpoch + 1 };
+      case "set_mission": return { generation: session.generation + 1, epoch: session.authorityEpoch + 2 };
+      case "cancel_run":
+      case "reset_session":
+      case "stop_session": return { generation: session.generation + 1, epoch: session.authorityEpoch + 1 };
+      default: return undefined;
+    }
+  }
   async poll(id: string, browserToken: string | undefined): Promise<PollResult> {
     const session = this.assertBrowser(id, browserToken);
     this.touchBrowser(session);
@@ -180,8 +192,11 @@ export class BrowserRelay {
     if (input.generation !== command.generation || input.authorityEpoch !== command.authorityEpoch || input.generation !== session.generation || input.authorityEpoch !== session.authorityEpoch) {
       throw new RelayError("stale_generation", "result belongs to an invalidated simulation generation", 409);
     }
-    if (input.authority && ((command.name !== "reset_session" && command.name !== "stop_session") || !input.ok || !Number.isSafeInteger(input.authority.generation) || input.authority.generation <= session.generation || !Number.isSafeInteger(input.authority.epoch) || input.authority.epoch < 0)) {
-      throw new RelayError("invalid_authority_update", "only a successful reset_session or stop_session may advance authority", 409);
+    if (input.authority) {
+      const expected = this.expectedAuthorityUpdate(command.name, session);
+      if (!input.ok || !expected || input.authority.generation !== expected.generation || input.authority.epoch !== expected.epoch) {
+        throw new RelayError("invalid_authority_update", "authority update does not match this canonical mutation", 409);
+      }
     }
     const body = input.ok ? input.result : { code: "browser_command_failed", message: input.error?.slice(0, 512) || "browser rejected command" };
     if (Buffer.byteLength(JSON.stringify(body ?? null), "utf8") > this.config.maxResultBytes) throw new RelayError("result_too_large", "browser result exceeds relay limit", 413);
@@ -214,8 +229,7 @@ export class BrowserRelay {
     if (session.commands.size >= this.config.maxQueue) throw new RelayError("queue_full", "browser command queue is full", 429);
     const expiresAtMs = Math.min(session.expiresAtMs, Date.now() + this.config.commandTtlMs);
     return new Promise<unknown>((resolve, reject) => {
-      let command: PendingCommand;
-      command = {
+      const command: PendingCommand = {
         id: randomUUID(), requestId: dedupeId, name, args, generation: session.generation, authorityEpoch: session.authorityEpoch,
         expiresAt: new Date(expiresAtMs).toISOString(), state: "queued" as const, resolve, reject,
         timer: undefined as unknown as NodeJS.Timeout,

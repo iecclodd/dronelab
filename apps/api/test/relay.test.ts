@@ -4,7 +4,7 @@ import { BrowserRelay, RelayError, type RelayConfig } from "../src/relay.js";
 import { anthropicAdapter, geminiAdapter, openAIAdapter } from "../src/providers.js";
 import { createRelayApp } from "../src/index.js";
 
-const config: RelayConfig = { secret: "s".repeat(32), allowedOrigins: new Set(["https://app.example.test"]), sessionTtlMs: 5_000, commandTtlMs: 50, pollTimeoutMs: 20, maxQueue: 2, maxResultBytes: 1024, maxSessions: 2 };
+const config: RelayConfig = { secret: "s".repeat(32), allowedOrigins: new Set(["https://app.example.test"]), sessionTtlMs: 5_000, commandTtlMs: 50, pollTimeoutMs: 20, maxQueue: 2, maxResultBytes: 1024, maxSessions: 2, providerCallsPerHour: 60 };
 const relay = () => new BrowserRelay(config);
 
 describe("BrowserRelay", () => {
@@ -41,6 +41,19 @@ describe("BrowserRelay", () => {
     subject.submitResult(session.sessionId, session.browserToken, { commandId: fresh.id, requestId: fresh.requestId, generation: fresh.generation, authorityEpoch: fresh.authorityEpoch, authority: { generation: old.generation + 1, epoch: old.authorityEpoch + 1 }, ok: true, result: { reset: true } });
     await expect(pending).rejects.toMatchObject({ code: "stale_generation" });
     await expect(reset).resolves.toEqual({ reset: true });
+  });
+  it("accepts only the browser worker's exact canonical authority transitions", async () => {
+    const subject = relay(); const session = subject.createSession({ generation: 10, epoch: 20 });
+    const execute = async (name: "get_observation" | "pause_session" | "set_mission" | "cancel_run", authority?: { generation: number; epoch: number }) => {
+      const pending = subject.issue(session.sessionId, session.mcpToken, name, {}, name);
+      const [command] = (await subject.poll(session.sessionId, session.browserToken)).commands;
+      subject.submitResult(session.sessionId, session.browserToken, { commandId: command.id, requestId: command.requestId, generation: command.generation, authorityEpoch: command.authorityEpoch, authority, ok: true, result: { name } });
+      await expect(pending).resolves.toEqual({ name });
+    };
+    await execute("get_observation");
+    await execute("pause_session", { generation: 10, epoch: 21 });
+    await execute("set_mission", { generation: 11, epoch: 23 });
+    await execute("cancel_run", { generation: 12, epoch: 24 });
   });
   it("expires a command if the browser does not answer", async () => {
     const subject = relay(); const session = subject.createSession();
@@ -80,6 +93,25 @@ describe("HTTP relay safeguards", () => {
       const preflight = await fetch(`${root}/providers/openai/plan`, { method: "OPTIONS", headers: { origin: "https://app.example.test", "access-control-request-method": "POST", "access-control-request-headers": "x-dronelab-session-id, x-dronelab-pair-token, authorization, content-type" } });
       expect(preflight.status).toBe(204);
       expect(preflight.headers.get("access-control-allow-headers")).toContain("x-dronelab-session-id");
+    } finally { await relayApp.close(); }
+  });
+  it("retains the operator provider budget across new browser sessions", async () => {
+    const secret = "u".repeat(32);
+    const relayApp = createRelayApp({ ...config, secret, providerCallsPerHour: 1 });
+    relayApp.server.listen(0, "127.0.0.1"); await once(relayApp.server, "listening");
+    const address = relayApp.server.address(); if (!address || typeof address === "string") throw new Error("bind failed");
+    const root = `http://127.0.0.1:${address.port}`;
+    const headers = { authorization: `Bearer ${secret}`, origin: "https://app.example.test", "content-type": "application/json" };
+    const create = async () => {
+      const response = await fetch(`${root}/sessions`, { method: "POST", headers, body: JSON.stringify({ generation: 1, authorityEpoch: 0 }) });
+      return response.json() as Promise<{ sessionId: string; browserToken: string }>;
+    };
+    const plan = (session: { sessionId: string; browserToken: string }) => fetch(`${root}/providers/openai/plan`, { method: "POST", headers: { ...headers, "x-dronelab-session-id": session.sessionId, "x-dronelab-pair-token": session.browserToken }, body: JSON.stringify({ messages: [{ role: "user", content: "plan" }], tools: [] }) });
+    try {
+      const first = await create();
+      expect((await plan(first)).status).toBe(503);
+      const second = await create();
+      expect((await plan(second)).status).toBe(429);
     } finally { await relayApp.close(); }
   });
 });

@@ -21,6 +21,13 @@ export interface RelayApp { app: express.Express; relay: BrowserRelay; server: h
 export function createRelayApp(config: RelayConfig = configFromEnv()): RelayApp {
   const relay = new BrowserRelay(config);
   const providerCalls = new Map<string, number>();
+  const operatorProviderCalls: number[] = [];
+  const consumeOperatorProviderBudget = () => {
+    const now = Date.now();
+    while (operatorProviderCalls.length > 0 && operatorProviderCalls[0] <= now - 3_600_000) operatorProviderCalls.shift();
+    if (operatorProviderCalls.length >= config.providerCallsPerHour) throw new RelayError("operator_provider_budget_exhausted", "operator rolling provider-call budget is exhausted", 429);
+    operatorProviderCalls.push(now);
+  };
   const reapProviderCalls = () => {
     for (const key of providerCalls.keys()) {
       const separator = key.lastIndexOf(":");
@@ -57,6 +64,7 @@ export function createRelayApp(config: RelayConfig = configFromEnv()): RelayApp 
     const calls = providerCalls.get(budgetKey) ?? 0;
     if (calls >= 20) throw new RelayError("provider_budget_exhausted", "per-session provider call budget is exhausted", 429);
     if (activeProviderCalls >= 2) throw new RelayError("provider_busy", "provider concurrency limit reached", 429);
+    consumeOperatorProviderBudget();
     providerCalls.set(budgetKey, calls + 1); activeProviderCalls += 1;
     const env = process.env;
     const upper = provider.toUpperCase();
