@@ -37,6 +37,21 @@ test('keeps clock modes exclusive and only advances in lockstep', async ({ page 
   await expect(page.evaluate(() => window.workerHarness.request('advance', { ticks: 1 }))).rejects.toThrow('Lockstep required');
 });
 
+test('publishes an authoritative snapshot whenever the clock mode changes', async ({ page }) => {
+  await page.evaluate(() => window.workerHarness.clearMessages());
+  await page.evaluate(() => window.workerHarness.request('mode', { mode: 'lockstep' }));
+  const snapshots = await page.evaluate(() => window.workerHarness.messages().filter(message => message.type === 'snapshot'));
+  expect(snapshots).toHaveLength(1);
+  expect(snapshots[0]?.payload).toMatchObject({ mode: 'lockstep', controller: 'manual', config: { scenario: 'hover' }, state: { step: 0 } });
+});
+
+test('uses a rate-compatible hold action before a rate command arrives', async ({ page }) => {
+  await page.evaluate(() => window.workerHarness.request('reset', { config: { scenario: 'hover', seed: 42, wind: [0, 0, 0], noise: 0, delaySteps: 0, maxSeconds: 30, dt: 1 / 120 }, controller: 'rate' }));
+  await page.evaluate(() => window.workerHarness.request('mode', { mode: 'lockstep' }));
+  const result = await page.evaluate(() => window.workerHarness.request('advance', { ticks: 1 }));
+  expect(result.transition.appliedAction).toEqual({ kind: 'rate', rates: [0, 0, 0], thrust: .42 });
+});
+
 test('serializes concurrent lockstep advances', async ({ page }) => {
   await page.evaluate(() => window.workerHarness.request('mode', { mode: 'lockstep' }));
   const results = await page.evaluate(() => Promise.all([
@@ -62,7 +77,7 @@ test('restores a lockstep snapshot exactly', async ({ page }) => {
 test('cancels a yielding batch with stop and does not publish a successful stale batch result', async ({ page }) => {
   await page.evaluate(() => window.workerHarness.clearMessages());
   const settled = await page.evaluate(async () => {
-    const batch = window.workerHarness.request('batch', { configs: Array.from({ length: 32 }, () => ({ scenario: 'free', seed: 42, wind: [0, 0, 0], noise: 0, delaySteps: 0, maxSeconds: 30, dt: 1 / 120 })), control: 'scripted' });
+    const batch = window.workerHarness.request('batch', { configs: Array.from({ length: 8 }, () => ({ scenario: 'free', seed: 42, wind: [0, 0, 0], noise: 0, delaySteps: 0, maxSeconds: 30, dt: 1 / 120 })), control: 'scripted' });
     const stop = window.workerHarness.request('stop');
     return Promise.allSettled([batch, stop]).then(results => results.map(result => result.status === 'rejected' ? { status: result.status, reason: String(result.reason) } : { status: result.status, value: result.value }));
   });
@@ -72,6 +87,21 @@ test('cancels a yielding batch with stop and does not publish a successful stale
   expect(messages.filter(message => message.type === 'result' && message.requestId === 1 && !message.error)).toHaveLength(0);
   const state = await page.evaluate(() => window.workerHarness.request('get'));
   expect(state.mode).toBe('paused');
+});
+
+test('rejects batches whose requested episode decisions exceed the shared budget', async ({ page }) => {
+  await expect(page.evaluate(() => window.workerHarness.request('batch', { configs: Array.from({ length: 23 }, (_, seed) => ({ scenario: 'free', seed, wind: [0, 0, 0], noise: 0, delaySteps: 0, maxSeconds: 30, dt: 1 / 120 })), control: 'scripted' }))).rejects.toThrow('Batch decision budget exceeds 20000');
+});
+
+test('records a zero-tick terminal transition when stopping a recording', async ({ page }) => {
+  await page.evaluate(() => window.workerHarness.clearMessages());
+  await page.evaluate(() => window.workerHarness.request('record'));
+  await page.evaluate(() => window.workerHarness.request('mode', { mode: 'lockstep' }));
+  await page.evaluate(() => window.workerHarness.request('advance', { ticks: 4 }));
+  await page.evaluate(() => window.workerHarness.request('stop'));
+  const run = await page.evaluate(() => window.workerHarness.messages().find(message => message.type === 'run')?.payload);
+  expect(run.metrics.reason).toBe('user_stop');
+  expect(run.transitions.at(-1)).toMatchObject({ ticks: 0, reason: 'user_stop', startStep: 4, endStep: 4 });
 });
 
 test('halts terminal episodes and reports zero ticks on later advances', async ({ page }) => {
@@ -91,4 +121,9 @@ test('stop prevents further realtime ticks promptly', async ({ page }) => {
   const after = await page.evaluate(() => window.workerHarness.request('get'));
   expect(after.state.step).toBe(stopped.state.step);
   expect(after.mode).toBe('paused');
+});
+
+test('rejects new client requests after disposal', async ({ page }) => {
+  await page.evaluate(() => window.workerHarness.dispose());
+  await expect(page.evaluate(() => window.workerHarness.request('get'))).rejects.toThrow('Session closed');
 });
