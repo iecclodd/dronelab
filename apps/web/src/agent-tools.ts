@@ -1,15 +1,267 @@
-import {z} from 'zod';
-import type {RunRecord} from '../../../packages/contracts';
-import type {SimulationClient} from './simulation';
-type AppApi={sim:SimulationClient;getState:()=>any;startFlight:(options?:any)=>Promise<void>;stop:()=>Promise<void>;cancelWork:()=>Promise<void>;pauseFlight:()=>Promise<void>;resetFlight:(options?:{scenario?:string;seed?:number})=>Promise<void>;train:()=>Promise<any>;runExperiment:()=>Promise<any>;evaluate:()=>Promise<any>;captureFrame:(expectedStep:number)=>Promise<{step:number;dataUrl:string}>};
-declare global{interface Window{dronelab:AppApi;droneTools:{dispatch:typeof dispatch;list:()=>unknown;getArtifact:(id:string)=>unknown};}}
-const id=crypto.randomUUID();const jobs=new Map<string,{id:string;type:string;status:string;result?:unknown;error?:string}>();const artifacts=new Map<string,unknown>();
-const api=()=>{if(!window.dronelab)throw new Error('Browser session is initializing');return window.dronelab;};
-const empty=z.object({}).strict();
-const schemas={list_scenarios:empty,get_capabilities:empty,create_session:empty,get_observation:empty,reset_session:z.object({scenario:z.enum(['hover','gates','landing','free']).optional(),seed:z.number().int().min(0).max(0xffffffff).optional()}).strict(),set_mission:z.object({scenario:z.enum(['hover','gates','landing','free']),seed:z.number().int().min(0).max(0xffffffff).optional()}).strict(),pause_session:empty,stop_session:empty,start_experiment:empty,get_run_status:z.object({jobId:z.string()}).strict(),cancel_run:z.object({jobId:z.string()}).strict(),summarize_run:z.object({runId:z.string()}).strict(),start_training:empty,get_training_status:z.object({jobId:z.string()}).strict(),list_policies:empty,capture_frame:z.object({expectedStep:z.number().int().nonnegative()}).strict(),export_dataset:z.object({runId:z.string()}).strict()};
-type ToolName=keyof typeof schemas;
-function runningJob(){return [...jobs.values()].find(job=>job.status==='running');}
-function finishResult(result:unknown){return Array.isArray(result)?{runs:result.map((r:RunRecord)=>({id:r.id,metrics:r.metrics}))}:result&&typeof result==='object'&&'id'in result?{id:(result as {id:string}).id}:result;}
-function startJob(type:string,fn:()=>Promise<unknown>){if(runningJob())throw new Error('A tool job is already running');if(api().getState().busy)throw new Error('DroneLab is busy; wait for the active UI operation to finish');if(jobs.size>=32)jobs.delete(jobs.keys().next().value!);const job={id:crypto.randomUUID(),type,status:'running'} as {id:string;type:string;status:string;result?:unknown;error?:string};jobs.set(job.id,job);void fn().then(result=>{if(job.status!=='running')return;if(result===undefined){job.status='failed';job.error='Job ended without a result.';return;}job.status='completed';job.result=finishResult(result);}).catch(error=>{if(job.status==='running'){job.status='failed';job.error=error instanceof Error?error.message:String(error);}});return {jobId:job.id,status:job.status};}
-export async function dispatch(name:string,input:unknown={}){if(!(name in schemas))throw new Error('Unknown tool');const args=schemas[name as ToolName].parse(input) as any;const a=api();const s=a.getState();const active=runningJob();switch(name){case 'list_scenarios':return ['hover','gates','landing','free'];case 'get_capabilities':return {authority:'browser-worker',physics:'Rapier',stateObservations:true,rgb:!!s.rgbAvailable,training:'behavior cloning / CPU',remoteBackendRequired:false,clock:['realtime','lockstep'],maxEpisodes:32,maxSeconds:120};case 'create_session':return {sessionId:id,generation:a.sim.generation,authorityEpoch:a.sim.epoch};case 'get_observation':return a.sim.request('get');case 'reset_session':if(active)throw new Error('Cannot reset while a tool job is running');await a.resetFlight(args);return {reset:true};case 'set_mission':if(active)throw new Error('Cannot change mission while a tool job is running');await a.resetFlight(args);return {accepted:true,scenario:args.scenario};case 'pause_session':await a.pauseFlight();return {paused:true};case 'stop_session':await a.stop();if(active)active.status='cancelled';return {stopped:true};case 'start_experiment':return startJob(name,()=>a.runExperiment());case 'start_training':return startJob(name,()=>a.train());case 'get_run_status':case 'get_training_status':{const job=jobs.get(args.jobId);if(!job)throw new Error('Unknown job');return {...job,progress:a.getState().training};}case 'cancel_run':{const job=jobs.get(args.jobId);if(!job)throw new Error('Unknown job');if(job.status!=='running')throw new Error('Only a running job can be cancelled');job.status='cancelled';await a.cancelWork();return {...job};}case 'list_policies':return (s.policies??[]).map((p:any)=>({id:p.id,scenario:p.scenario,hash:p.hash,epochs:p.epochs}));case 'summarize_run':{const run=(s.runs as RunRecord[]).find(r=>r.id===args.runId);if(!run)throw new Error('Run not found');return {id:run.id,metrics:run.metrics,manifest:run.manifest};}case 'capture_frame':{if(!s.rgbAvailable)throw new Error('RGB capture is unavailable in this browser session');const frame=await a.captureFrame(args.expectedStep);if(frame.dataUrl.length>8_000_000)throw new Error('Capture exceeds 8 MB limit');const artifactId=crypto.randomUUID();artifacts.set(artifactId,frame);if(artifacts.size>8)artifacts.delete(artifacts.keys().next().value!);return {artifactId,step:frame.step,format:'image/png',scope:'this browser tab',retrieval:'Use window.droneTools.getArtifact(artifactId) in this tab.'};}case 'export_dataset':{const run=(s.runs as RunRecord[]).find(r=>r.id===args.runId);if(!run)throw new Error('Run not found');const artifactId=crypto.randomUUID();artifacts.set(artifactId,run);if(artifacts.size>8)artifacts.delete(artifacts.keys().next().value!);return {artifactId,transitions:run.transitions.length,scope:'this browser tab',schema:'run-v1',retrieval:'Use window.droneTools.getArtifact(artifactId) in this tab.'};}default:throw new Error('Unsupported tool');}}
-export function attachAgentTools(){window.droneTools={dispatch,list:()=>Object.keys(schemas),getArtifact:(artifactId:string)=>artifacts.get(artifactId)};const context=(document as any).modelContext;if(!context?.registerTool)return;const lifecycle=new AbortController();for(const [name,schema]of Object.entries(schemas)){void Promise.resolve(context.registerTool({name,description:`DroneLab ${name.replaceAll('_',' ')} in the active browser session.`,inputSchema:z.toJSONSchema(schema),annotations:{readOnlyHint:['list_scenarios','get_capabilities','get_observation','get_run_status','get_training_status','list_policies','summarize_run'].includes(name),untrustedContentHint:false},execute:(args:unknown)=>dispatch(name,args)},{signal:lifecycle.signal})).catch(()=>{/* Optional experimental browser API. */});}window.addEventListener('pagehide',()=>lifecycle.abort(),{once:true});}
+import { z } from "zod";
+import type { RunRecord } from "../../../packages/contracts";
+import type { SimulationClient } from "./simulation";
+type AppApi = {
+  sim: SimulationClient;
+  getState: () => any;
+  startFlight: (options?: any) => Promise<void>;
+  stop: () => Promise<void>;
+  cancelWork: () => Promise<void>;
+  pauseFlight: () => Promise<void>;
+  resetFlight: (options?: {
+    scenario?: string;
+    seed?: number;
+  }) => Promise<void>;
+  train: () => Promise<any>;
+  runExperiment: () => Promise<any>;
+  evaluate: () => Promise<any>;
+  captureFrame: (
+    expectedStep: number,
+  ) => Promise<{ step: number; dataUrl: string }>;
+};
+declare global {
+  interface Window {
+    dronelab: AppApi;
+    droneTools: {
+      dispatch: typeof dispatch;
+      list: () => unknown;
+      getArtifact: (id: string) => unknown;
+    };
+  }
+}
+const id = crypto.randomUUID();
+const jobs = new Map<
+  string,
+  { id: string; type: string; status: string; result?: unknown; error?: string }
+>();
+const artifacts = new Map<string, unknown>();
+const api = () => {
+  if (!window.dronelab) throw new Error("Browser session is initializing");
+  return window.dronelab;
+};
+const empty = z.object({}).strict();
+const schemas = {
+  list_scenarios: empty,
+  get_capabilities: empty,
+  create_session: empty,
+  get_observation: empty,
+  reset_session: z
+    .object({
+      scenario: z.enum(["hover", "gates", "landing", "free"]).optional(),
+      seed: z.number().int().min(0).max(0xffffffff).optional(),
+    })
+    .strict(),
+  set_mission: z
+    .object({
+      scenario: z.enum(["hover", "gates", "landing", "free"]),
+      seed: z.number().int().min(0).max(0xffffffff).optional(),
+    })
+    .strict(),
+  pause_session: empty,
+  stop_session: empty,
+  start_experiment: empty,
+  get_run_status: z.object({ jobId: z.string() }).strict(),
+  cancel_run: z.object({ jobId: z.string() }).strict(),
+  summarize_run: z.object({ runId: z.string() }).strict(),
+  start_training: empty,
+  get_training_status: z.object({ jobId: z.string() }).strict(),
+  list_policies: empty,
+  capture_frame: z
+    .object({ expectedStep: z.number().int().nonnegative() })
+    .strict(),
+  export_dataset: z.object({ runId: z.string() }).strict(),
+};
+type ToolName = keyof typeof schemas;
+function runningJob() {
+  return [...jobs.values()].find((job) => job.status === "running");
+}
+function finishResult(result: unknown) {
+  return Array.isArray(result)
+    ? { runs: result.map((r: RunRecord) => ({ id: r.id, metrics: r.metrics })) }
+    : result && typeof result === "object" && "id" in result
+      ? { id: (result as { id: string }).id }
+      : result;
+}
+function startJob(type: string, fn: () => Promise<unknown>) {
+  if (runningJob()) throw new Error("A tool job is already running");
+  if (api().getState().busy)
+    throw new Error(
+      "DroneLab is busy; wait for the active UI operation to finish",
+    );
+  if (jobs.size >= 32) jobs.delete(jobs.keys().next().value!);
+  const job = { id: crypto.randomUUID(), type, status: "running" } as {
+    id: string;
+    type: string;
+    status: string;
+    result?: unknown;
+    error?: string;
+  };
+  jobs.set(job.id, job);
+  void fn()
+    .then((result) => {
+      if (job.status !== "running") return;
+      if (result === undefined) {
+        job.status = "failed";
+        job.error = "Job ended without a result.";
+        return;
+      }
+      job.status = "completed";
+      job.result = finishResult(result);
+    })
+    .catch((error) => {
+      if (job.status === "running") {
+        job.status = "failed";
+        job.error = error instanceof Error ? error.message : String(error);
+      }
+    });
+  return { jobId: job.id, status: job.status };
+}
+export async function dispatch(name: string, input: unknown = {}) {
+  if (!(name in schemas)) throw new Error("Unknown tool");
+  const args = schemas[name as ToolName].parse(input) as any;
+  const a = api();
+  const s = a.getState();
+  const active = runningJob();
+  switch (name) {
+    case "list_scenarios":
+      return ["hover", "gates", "landing", "free"];
+    case "get_capabilities":
+      return {
+        authority: "browser-worker",
+        physics: "Rapier",
+        stateObservations: true,
+        rgb: !!s.rgbAvailable,
+        training: "behavior cloning / CPU",
+        remoteBackendRequired: false,
+        clock: ["realtime", "lockstep"],
+        maxEpisodes: 32,
+        maxSeconds: 120,
+      };
+    case "create_session":
+      return {
+        sessionId: id,
+        generation: a.sim.generation,
+        authorityEpoch: a.sim.epoch,
+      };
+    case "get_observation":
+      return a.sim.request("get");
+    case "reset_session":
+      if (active) throw new Error("Cannot reset while a tool job is running");
+      await a.resetFlight(args);
+      return { reset: true };
+    case "set_mission":
+      if (active)
+        throw new Error("Cannot change mission while a tool job is running");
+      await a.startFlight({ controller: "scripted", config: args });
+      return { accepted: true, scenario: args.scenario };
+    case "pause_session":
+      await a.pauseFlight();
+      return { paused: true };
+    case "stop_session":
+      await a.stop();
+      if (active) active.status = "cancelled";
+      return { stopped: true };
+    case "start_experiment":
+      return startJob(name, () => a.runExperiment());
+    case "start_training":
+      return startJob(name, () => a.train());
+    case "get_run_status":
+    case "get_training_status": {
+      const job = jobs.get(args.jobId);
+      if (!job) throw new Error("Unknown job");
+      return { ...job, progress: a.getState().training };
+    }
+    case "cancel_run": {
+      const job = jobs.get(args.jobId);
+      if (!job) throw new Error("Unknown job");
+      if (job.status !== "running")
+        throw new Error("Only a running job can be cancelled");
+      job.status = "cancelled";
+      await a.cancelWork();
+      return { ...job };
+    }
+    case "list_policies":
+      return (s.policies ?? []).map((p: any) => ({
+        id: p.id,
+        scenario: p.scenario,
+        hash: p.hash,
+        epochs: p.epochs,
+      }));
+    case "summarize_run": {
+      const run = (s.runs as RunRecord[]).find((r) => r.id === args.runId);
+      if (!run) throw new Error("Run not found");
+      return { id: run.id, metrics: run.metrics, manifest: run.manifest };
+    }
+    case "capture_frame": {
+      if (!s.rgbAvailable)
+        throw new Error("RGB capture is unavailable in this browser session");
+      const frame = await a.captureFrame(args.expectedStep);
+      if (frame.dataUrl.length > 8_000_000)
+        throw new Error("Capture exceeds 8 MB limit");
+      const artifactId = crypto.randomUUID();
+      artifacts.set(artifactId, frame);
+      if (artifacts.size > 8) artifacts.delete(artifacts.keys().next().value!);
+      return {
+        artifactId,
+        step: frame.step,
+        format: "image/png",
+        scope: "this browser tab",
+        retrieval: "Use window.droneTools.getArtifact(artifactId) in this tab.",
+      };
+    }
+    case "export_dataset": {
+      const run = (s.runs as RunRecord[]).find((r) => r.id === args.runId);
+      if (!run) throw new Error("Run not found");
+      const artifactId = crypto.randomUUID();
+      artifacts.set(artifactId, run);
+      if (artifacts.size > 8) artifacts.delete(artifacts.keys().next().value!);
+      return {
+        artifactId,
+        transitions: run.transitions.length,
+        scope: "this browser tab",
+        schema: "run-v1",
+        retrieval: "Use window.droneTools.getArtifact(artifactId) in this tab.",
+      };
+    }
+    default:
+      throw new Error("Unsupported tool");
+  }
+}
+export function attachAgentTools() {
+  window.droneTools = {
+    dispatch,
+    list: () => Object.keys(schemas),
+    getArtifact: (artifactId: string) => artifacts.get(artifactId),
+  };
+  const context = (document as any).modelContext;
+  if (!context?.registerTool) return;
+  const lifecycle = new AbortController();
+  for (const [name, schema] of Object.entries(schemas)) {
+    void Promise.resolve(
+      context.registerTool(
+        {
+          name,
+          description: `DroneLab ${name.replaceAll("_", " ")} in the active browser session.`,
+          inputSchema: z.toJSONSchema(schema),
+          annotations: {
+            readOnlyHint: [
+              "list_scenarios",
+              "get_capabilities",
+              "get_observation",
+              "get_run_status",
+              "get_training_status",
+              "list_policies",
+              "summarize_run",
+            ].includes(name),
+            untrustedContentHint: false,
+          },
+          execute: (args: unknown) => dispatch(name, args),
+        },
+        { signal: lifecycle.signal },
+      ),
+    ).catch(() => {
+      /* Optional experimental browser API. */
+    });
+  }
+  window.addEventListener("pagehide", () => lifecycle.abort(), { once: true });
+}

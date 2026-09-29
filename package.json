@@ -1,7 +1,42 @@
 {
-  "name": "dronelab", "version": "0.1.0", "private": true, "type": "module",
-  "scripts": {"dev":"vite --host 127.0.0.1", "build":"tsc --noEmit && vite build", "preview":"vite preview --host 127.0.0.1 --port 4173", "typecheck":"tsc --noEmit", "test":"vitest run", "lint":"eslint .", "test:browser":"playwright test"},
-  "dependencies": {"@dimforge/rapier3d-compat":"0.21.0", "@react-three/drei":"10.7.9", "@react-three/fiber":"9.8.1", "@tensorflow/tfjs":"4.22.0", "react":"19.3.0", "react-dom":"19.3.0", "three":"0.186.1", "lucide-react":"^0.468.0", "idb":"^8.0.3", "fflate":"^0.8.2", "zod":"4.6.5"},
-  "devDependencies": {"@eslint/js":"^9.39.0", "eslint":"^9.39.0", "typescript-eslint":"^8.48.0", "@playwright/test":"1.63.0", "@types/node":"^24.10.0", "@types/react":"^19.2.0", "@types/react-dom":"^19.2.0", "@types/three":"^0.183.0", "@vitejs/plugin-react":"^6.0.0", "typescript":"6.0.3", "vite":"8.3.1", "vitest":"5.0.2"}
+  "name": "dronelab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4173",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint .",
+    "test:browser": "npm run build && playwright test"
+  },
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "0.21.0",
+    "@react-three/drei": "10.7.9",
+    "@react-three/fiber": "9.8.1",
+    "@tensorflow/tfjs": "4.22.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "three": "0.186.1",
+    "lucide-react": "^0.468.0",
+    "idb": "^8.0.3",
+    "fflate": "^0.8.2",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "eslint": "^9.39.0",
+    "typescript-eslint": "^8.48.0",
+    "@playwright/test": "1.63.0",
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@types/three": "^0.183.0",
+    "@vitejs/plugin-react": "^6.0.0",
+    "typescript": "6.0.3",
+    "vite": "8.3.1",
+    "vitest": "5.0.2"
+  }
 }
-

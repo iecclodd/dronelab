@@ -1,29 +1,509 @@
-import { DroneEnvironment, initPhysics, makeScenario } from '../../../packages/sim-core';
-import { DEFAULT_CONFIG, VERSION, validateConfig, validateAction, ACTION_REPEAT, hashValue, type Action,type ClockMode,type ControllerId,type PolicyCheckpoint,type RunRecord,type SimConfig,type Transition,type WorkerRequest } from '../../../packages/contracts';
-import { predict, validateCheckpoint } from '../../../packages/learning';
+import {
+  DroneEnvironment,
+  initPhysics,
+  makeScenario,
+} from "../../../packages/sim-core";
+import {
+  DEFAULT_CONFIG,
+  VERSION,
+  validateConfig,
+  validateAction,
+  ACTION_REPEAT,
+  hashValue,
+  type Action,
+  type ClockMode,
+  type ControllerId,
+  type PolicyCheckpoint,
+  type RunRecord,
+  type SimConfig,
+  type Transition,
+  type WorkerRequest,
+} from "../../../packages/contracts";
+import { predict, validateCheckpoint } from "../../../packages/learning";
 
-let env:DroneEnvironment; let generation=0; let epoch=0; let mode:ClockMode='paused';
-let controller:ControllerId='manual';let policy:PolicyCheckpoint|undefined;let command:Action={kind:'nav',velocity:[0,0,0],yawRate:0};let validThrough=0;
-let last=performance.now();let accumulator=0;let recording:RunRecord|undefined;let pending:Transition[]=[];let busy=false;
-const RESULT_CACHE_TTL_MS=60_000,RESULT_CACHE_BYTES=4_000_000,RESULT_CACHE_ENTRIES=128;
-type SeenResult={fingerprint:string;result?:unknown;bytes:number;expiresAt:number;replayError?:string};
-const seen=new Map<string,SeenResult>();let seenBytes=0;
-function post(type:string,payload?:unknown,requestId?:number,error?:string){self.postMessage({type,payload,requestId,error,generation,epoch});}
-function holdAction():Action{return controller==='rate'?{kind:'rate',rates:[0,0,0],thrust:.42}:{kind:'nav',velocity:[0,0,0],yawRate:0};}
-function snapshotPayload(){return {state:env.state(),observation:env.observe(),scenario:env.scenario,config:env.config,mode,controller};}
-function postSnapshot(){post('snapshot',snapshotPayload());}
-function pruneSeen(now=Date.now()){for(const [key,entry]of seen){if(entry.expiresAt>now)continue;seen.delete(key);seenBytes-=entry.bytes;}while(seen.size>RESULT_CACHE_ENTRIES){const oldest=seen.entries().next().value as [string,SeenResult]|undefined;if(!oldest)break;seen.delete(oldest[0]);seenBytes-=oldest[1].bytes;}}
-function remember(key:string,fingerprint:string,result:unknown){pruneSeen();const bytes=new TextEncoder().encode(JSON.stringify(result)).byteLength;const expiresAt=Date.now()+RESULT_CACHE_TTL_MS;if(bytes>RESULT_CACHE_BYTES){seen.set(key,{fingerprint,bytes:0,expiresAt,replayError:'result_replay_unavailable'});pruneSeen();return;}while(seenBytes+bytes>RESULT_CACHE_BYTES&&seen.size){const oldest=seen.entries().next().value as [string,SeenResult]|undefined;if(!oldest)break;seen.delete(oldest[0]);seenBytes-=oldest[1].bytes;}seen.set(key,{fingerprint,result,bytes,expiresAt});seenBytes+=bytes;pruneSeen();}
-function newRun(config:SimConfig,control:ControllerId):RunRecord{return {id:crypto.randomUUID(),createdAt:new Date().toISOString(),status:'recording',config:{...config},controller:control,policyId:control==='learned'?policy?.id:undefined,manifest:{version:VERSION,schema:'run-v1',configHash:hashValue(config),physics:'rapier3d-0.21.0',frame:'ENU / body FLU / xyzw',action:control==='rate'?'rate-v1':'nav-v1',observation:'state-v1',reward:'mission-v1',dt:config.dt,actionRepeat:ACTION_REPEAT,aggregation:'sum of per-tick components',policyHash:control==='learned'?policy?.hash:undefined,randomization:{wind:config.wind,noise:config.noise,delaySteps:config.delaySteps},wallStart:Date.now(),seed:config.seed},transitions:[],metrics:{success:false,reason:'running',seconds:0,collisions:0,trackingError:0,energy:0,reward:0,steps:0,wallSeconds:0,throughput:0}};}
-function finishRun(run:RunRecord,status:RunRecord['status']){const s=env.state();const wallSeconds=Math.max(.001,(Date.now()-Number(run.manifest.wallStart))/1000);run.status=status;run.metrics={success:s.reason==='success',reason:s.reason,seconds:s.time,collisions:s.collisions,energy:s.energy,steps:s.step,wallSeconds,throughput:s.step/wallSeconds,reward:run.transitions.reduce((n,t)=>n+t.reward,0),trackingError:run.transitions.reduce((n,t)=>n+Math.hypot(t.state.target[0]-t.state.position[0],t.state.target[1]-t.state.position[1],t.state.target[2]-t.state.position[2]),0)/Math.max(1,run.transitions.length)};return run;}
-function selectedAction():Action{if(controller==='scripted')return env.scriptedAction();if(controller==='random')return env.randomAction();if(controller==='learned'&&policy)return predict(policy,env.observe());return env.state().step<=validThrough?command:holdAction();}
-function flush(){if(recording&&pending.length){post('chunk',{id:recording.id,transitions:pending});pending=[];}}
-function tick(){const result=env.step(selectedAction(),ACTION_REPEAT);result.transition.wallTime=Date.now();if(recording){recording.transitions.push(result.transition);pending.push(result.transition);if(pending.length>=30)flush();}if(result.state.terminated||result.state.truncated){mode='paused';flush();if(recording){post('run',finishRun(recording,'completed'));recording=undefined;}}postSnapshot();}
-function stopRecording(status:RunRecord['status']){if(recording){env.stop('user_stop');const result=env.step(selectedAction(),ACTION_REPEAT);result.transition.wallTime=Date.now();recording.transitions.push(result.transition);pending.push(result.transition);flush();post('run',finishRun(recording,status));recording=undefined;}}
-function episodeDecisions(config:SimConfig){return Math.ceil(config.maxSeconds/(config.dt*ACTION_REPEAT))+1;}
-async function batch(request:WorkerRequest){busy=true;const token=generation;const {configs,control,checkpoint}=request.payload as {configs:SimConfig[];control:ControllerId;checkpoint?:PolicyCheckpoint};if(configs.length<1||configs.length>32)throw new Error('Episode budget must be 1–32');if(!['scripted','random','learned'].includes(control))throw new Error('Invalid batch controller');if(control==='learned'&&!checkpoint)throw new Error('Select a trained policy');const validConfigs=configs.map(validateConfig);if(validConfigs.reduce((total,config)=>total+episodeDecisions(config),0)>20_000)throw new Error('Batch decision budget exceeds 20000');if(checkpoint){validateCheckpoint(checkpoint);policy=checkpoint;}const runs:RunRecord[]=[];mode='lockstep';postSnapshot();for(let i=0;i<validConfigs.length;i++){if(token!==generation)break;const config=validConfigs[i]!;env.dispose();env=new DroneEnvironment(config);controller=control;command=holdAction();const run=newRun(config,control);for(let j=0;j<episodeDecisions(config);j++){if(token!==generation)break;const result=env.step(selectedAction(),ACTION_REPEAT);result.transition.wallTime=Date.now();run.transitions.push(result.transition);if(result.state.terminated||result.state.truncated)break;if(j%60===0){post('progress',{completed:i,total:validConfigs.length,episodeStep:result.state.step});await new Promise(resolve=>setTimeout(resolve,0));}}if(token!==generation)break;runs.push(finishRun(run,'completed'));post('progress',{completed:i+1,total:validConfigs.length,episodeStep:env.state().step});await new Promise(resolve=>setTimeout(resolve,0));}busy=false;if(token===generation){mode='paused';postSnapshot();return runs;}throw new Error('Batch cancelled');}
-async function handle(request:WorkerRequest){const {type,payload,requestId}=request;const key=`${request.generation}:${request.epoch}:${requestId}`;const fingerprint=hashValue(request);pruneSeen();const prior=seen.get(key);if(prior){if(prior.fingerprint!==fingerprint)post('result',undefined,requestId,'request_id_conflict');else if(prior.replayError)post('result',undefined,requestId,prior.replayError);else post('result',prior.result,requestId);return;}try{if(request.generation!==generation||request.epoch!==epoch)throw new Error('stale_authority');if(request.expectedStep!==undefined&&request.expectedStep!==env.state().step)throw new Error('step_mismatch');if(busy&&!['stop','get','reset'].includes(type))throw new Error('Session busy');let result:unknown;switch(type){case 'reset':validateConfig(payload.config);if(!['manual','rate','scripted','random','learned'].includes(payload.controller??'manual'))throw new Error('Unknown controller');if(payload.controller==='learned')validateCheckpoint(payload.policy);mode='paused';generation++;epoch++;stopRecording('stopped');env.dispose();env=new DroneEnvironment(validateConfig(payload.config));controller=payload.controller??'manual';policy=payload.policy;last=performance.now();accumulator=0;command=holdAction();validThrough=0;result=snapshotPayload();postSnapshot();break;case 'mode':if(!['paused','realtime','lockstep','replay'].includes(payload.mode))throw new Error('Invalid clock mode');if((env.state().terminated||env.state().truncated)&&!['paused','replay'].includes(payload.mode))throw new Error('Reset the completed episode');mode=payload.mode;epoch++;last=performance.now();accumulator=0;result={mode};postSnapshot();break;case 'action':if(mode!=='realtime'&&mode!=='lockstep')throw new Error('Session paused');command=validateAction(payload.action);validThrough=env.state().step+60;result={accepted:true};break;case 'controller':if(!['manual','rate','scripted','random','learned'].includes(payload.controller))throw new Error('Unknown controller');if(payload.controller==='learned'&&!payload.policy)throw new Error('Train a policy first');if(recording)throw new Error('Stop recording before changing controller');controller=payload.controller;policy=payload.policy;command=holdAction();validThrough=0;epoch++;result={controller};break;case 'record':if(recording)throw new Error('Already recording');recording=newRun(env.config,controller);pending=[];result=recording;break;case 'stop':mode='paused';generation++;epoch++;stopRecording('stopped');env.stop('user_stop');command=holdAction();accumulator=0;result={mode,state:env.state()};postSnapshot();break;case 'scenario':result=makeScenario(validateConfig(payload.config));break;case 'get':result={state:env.state(),observation:env.observe(),scenario:env.scenario,mode,controller};break;case 'snapshot':if(mode==='realtime')throw new Error('Pause before snapshot');result=env.snapshot();break;case 'restore':if(mode==='realtime')throw new Error('Pause before restore');env.restore(payload);generation++;epoch++;result={state:env.state()};postSnapshot();break;case 'advance':if(mode!=='lockstep')throw new Error('Lockstep required');if(!Number.isInteger(payload.ticks)||payload.ticks<1||payload.ticks>1200)throw new Error('Tick budget exceeded');result=env.step(validateAction(payload.action??selectedAction()),payload.ticks);break;case 'batch':if(mode==='realtime')throw new Error('Pause before batch');result=await batch(request);break;default:throw new Error('Unknown worker request');}remember(key,fingerprint,result);post('result',result,requestId);}catch(error){if(type==='batch')busy=false;post('result',undefined,requestId,error instanceof Error?error.message:String(error));}}
-await initPhysics();env=new DroneEnvironment(DEFAULT_CONFIG);self.onmessage=event=>{void handle(event.data);};post('ready',{state:env.state(),scenario:env.scenario,observation:env.observe(),mode,controller});
-setInterval(()=>{if(mode!=='realtime'||busy)return;const now=performance.now();const elapsed=(now-last)/1000;last=now;if(elapsed>.75){mode='paused';post('interruption',{reason:'Tab suspended; resume explicitly.'});return;}accumulator+=elapsed;const interval=env.config.dt*ACTION_REPEAT;if(accumulator>.25){post('overload',{discardedSeconds:accumulator-.25});accumulator=.25;}let n=0;while(accumulator>=interval&&mode==='realtime'&&n++<8){accumulator-=interval;tick();}},8);
-
-
+let env: DroneEnvironment;
+let generation = 0;
+let epoch = 0;
+let mode: ClockMode = "paused";
+let controller: ControllerId = "manual";
+let policy: PolicyCheckpoint | undefined;
+let command: Action = { kind: "nav", velocity: [0, 0, 0], yawRate: 0 };
+let validThrough = 0;
+let last = performance.now();
+let accumulator = 0;
+let recording: RunRecord | undefined;
+let pending: Transition[] = [];
+let busy = false;
+const RESULT_CACHE_TTL_MS = 60_000,
+  RESULT_CACHE_BYTES = 4_000_000,
+  RESULT_CACHE_ENTRIES = 128;
+type SeenResult = {
+  fingerprint: string;
+  result?: unknown;
+  bytes: number;
+  expiresAt: number;
+  replayError?: string;
+};
+const seen = new Map<string, SeenResult>();
+let seenBytes = 0;
+function post(
+  type: string,
+  payload?: unknown,
+  requestId?: number,
+  error?: string,
+) {
+  self.postMessage({ type, payload, requestId, error, generation, epoch });
+}
+function holdAction(): Action {
+  return controller === "rate"
+    ? { kind: "rate", rates: [0, 0, 0], thrust: 0.42 }
+    : { kind: "nav", velocity: [0, 0, 0], yawRate: 0 };
+}
+function snapshotPayload() {
+  return {
+    state: env.state(),
+    observation: env.observe(),
+    scenario: env.scenario,
+    config: env.config,
+    mode,
+    controller,
+  };
+}
+function postSnapshot() {
+  post("snapshot", snapshotPayload());
+}
+function pruneSeen(now = Date.now()) {
+  for (const [key, entry] of seen) {
+    if (entry.expiresAt > now) continue;
+    seen.delete(key);
+    seenBytes -= entry.bytes;
+  }
+  while (seen.size > RESULT_CACHE_ENTRIES) {
+    const oldest = seen.entries().next().value as
+      | [string, SeenResult]
+      | undefined;
+    if (!oldest) break;
+    seen.delete(oldest[0]);
+    seenBytes -= oldest[1].bytes;
+  }
+}
+function remember(key: string, fingerprint: string, result: unknown) {
+  pruneSeen();
+  const bytes = new TextEncoder().encode(JSON.stringify(result)).byteLength;
+  const expiresAt = Date.now() + RESULT_CACHE_TTL_MS;
+  if (bytes > RESULT_CACHE_BYTES) {
+    seen.set(key, {
+      fingerprint,
+      bytes: 0,
+      expiresAt,
+      replayError: "result_replay_unavailable",
+    });
+    pruneSeen();
+    return;
+  }
+  while (seenBytes + bytes > RESULT_CACHE_BYTES && seen.size) {
+    const oldest = seen.entries().next().value as
+      | [string, SeenResult]
+      | undefined;
+    if (!oldest) break;
+    seen.delete(oldest[0]);
+    seenBytes -= oldest[1].bytes;
+  }
+  seen.set(key, {
+    fingerprint,
+    result: structuredClone(result),
+    bytes,
+    expiresAt,
+  });
+  seenBytes += bytes;
+  pruneSeen();
+}
+function newRun(config: SimConfig, control: ControllerId): RunRecord {
+  return {
+    id: crypto.randomUUID(),
+    createdAt: new Date().toISOString(),
+    status: "recording",
+    config: { ...config },
+    controller: control,
+    policyId: control === "learned" ? policy?.id : undefined,
+    manifest: {
+      version: VERSION,
+      schema: "run-v1",
+      configHash: hashValue(config),
+      physics: "rapier3d-0.21.0",
+      frame: "ENU / body FLU / xyzw",
+      action: control === "rate" ? "rate-v1" : "nav-v1",
+      observation: "state-v1",
+      reward: "mission-v1",
+      dt: config.dt,
+      actionRepeat: ACTION_REPEAT,
+      aggregation: "sum of per-tick components",
+      policyHash: control === "learned" ? policy?.hash : undefined,
+      randomization: {
+        wind: config.wind,
+        noise: config.noise,
+        delaySteps: config.delaySteps,
+      },
+      wallStart: Date.now(),
+      seed: config.seed,
+    },
+    transitions: [],
+    metrics: {
+      success: false,
+      reason: "running",
+      seconds: 0,
+      collisions: 0,
+      trackingError: 0,
+      energy: 0,
+      reward: 0,
+      steps: 0,
+      wallSeconds: 0,
+      throughput: 0,
+    },
+  };
+}
+function finishRun(run: RunRecord, status: RunRecord["status"]) {
+  const s = env.state();
+  const wallSeconds = Math.max(
+    0.001,
+    (Date.now() - Number(run.manifest.wallStart)) / 1000,
+  );
+  run.status = status;
+  run.metrics = {
+    success: s.reason === "success",
+    reason: s.reason,
+    seconds: s.time,
+    collisions: s.collisions,
+    energy: s.energy,
+    steps: s.step,
+    wallSeconds,
+    throughput: s.step / wallSeconds,
+    reward: run.transitions.reduce((n, t) => n + t.reward, 0),
+    trackingError:
+      run.transitions.reduce(
+        (n, t) =>
+          n +
+          Math.hypot(
+            t.state.target[0] - t.state.position[0],
+            t.state.target[1] - t.state.position[1],
+            t.state.target[2] - t.state.position[2],
+          ),
+        0,
+      ) / Math.max(1, run.transitions.length),
+  };
+  return run;
+}
+function selectedAction(): Action {
+  if (controller === "scripted") return env.scriptedAction();
+  if (controller === "random") return env.randomAction();
+  if (controller === "learned" && policy) return predict(policy, env.observe());
+  return env.state().step <= validThrough ? command : holdAction();
+}
+function flush() {
+  if (recording && pending.length) {
+    post("chunk", { id: recording.id, transitions: pending });
+    pending = [];
+  }
+}
+function tick() {
+  const result = env.step(selectedAction(), ACTION_REPEAT);
+  result.transition.wallTime = Date.now();
+  if (recording) {
+    recording.transitions.push(result.transition);
+    pending.push(result.transition);
+    if (pending.length >= 30) flush();
+  }
+  if (result.state.terminated || result.state.truncated) {
+    mode = "paused";
+    flush();
+    if (recording) {
+      post("run", finishRun(recording, "completed"));
+      recording = undefined;
+    }
+  }
+  postSnapshot();
+}
+function stopRecording(status: RunRecord["status"]) {
+  if (recording) {
+    env.stop("user_stop");
+    const result = env.step(selectedAction(), ACTION_REPEAT);
+    result.transition.wallTime = Date.now();
+    recording.transitions.push(result.transition);
+    pending.push(result.transition);
+    flush();
+    post("run", finishRun(recording, status));
+    recording = undefined;
+  }
+}
+function episodeDecisions(config: SimConfig) {
+  return Math.ceil(config.maxSeconds / (config.dt * ACTION_REPEAT)) + 1;
+}
+async function batch(request: WorkerRequest) {
+  busy = true;
+  const token = generation;
+  const { configs, control, checkpoint } = request.payload as {
+    configs: SimConfig[];
+    control: ControllerId;
+    checkpoint?: PolicyCheckpoint;
+  };
+  if (configs.length < 1 || configs.length > 32)
+    throw new Error("Episode budget must be 1–32");
+  if (!["scripted", "random", "learned"].includes(control))
+    throw new Error("Invalid batch controller");
+  if (control === "learned" && !checkpoint)
+    throw new Error("Select a trained policy");
+  const validConfigs = configs.map(validateConfig);
+  if (
+    validConfigs.reduce(
+      (total, config) => total + episodeDecisions(config),
+      0,
+    ) > 20_000
+  )
+    throw new Error("Batch decision budget exceeds 20000");
+  if (checkpoint) {
+    validateCheckpoint(checkpoint);
+    policy = checkpoint;
+  }
+  const runs: RunRecord[] = [];
+  mode = "lockstep";
+  postSnapshot();
+  for (let i = 0; i < validConfigs.length; i++) {
+    if (token !== generation) break;
+    const config = validConfigs[i]!;
+    env.dispose();
+    env = new DroneEnvironment(config);
+    controller = control;
+    command = holdAction();
+    const run = newRun(config, control);
+    for (let j = 0; j < episodeDecisions(config); j++) {
+      if (token !== generation) break;
+      const result = env.step(selectedAction(), ACTION_REPEAT);
+      result.transition.wallTime = Date.now();
+      run.transitions.push(result.transition);
+      if (result.state.terminated || result.state.truncated) break;
+      if (j % 60 === 0) {
+        post("progress", {
+          completed: i,
+          total: validConfigs.length,
+          episodeStep: result.state.step,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    }
+    if (token !== generation) break;
+    runs.push(finishRun(run, "completed"));
+    post("progress", {
+      completed: i + 1,
+      total: validConfigs.length,
+      episodeStep: env.state().step,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  busy = false;
+  if (token === generation) {
+    mode = "paused";
+    postSnapshot();
+    return runs;
+  }
+  throw new Error("Batch cancelled");
+}
+async function handle(request: WorkerRequest) {
+  const { type, payload, requestId } = request;
+  const key = `${request.generation}:${request.epoch}:${requestId}`;
+  const fingerprint = hashValue(request);
+  pruneSeen();
+  const prior = seen.get(key);
+  if (prior) {
+    if (prior.fingerprint !== fingerprint)
+      post("result", undefined, requestId, "request_id_conflict");
+    else if (prior.replayError)
+      post("result", undefined, requestId, prior.replayError);
+    else post("result", prior.result, requestId);
+    return;
+  }
+  try {
+    if (request.generation !== generation || request.epoch !== epoch)
+      throw new Error("stale_authority");
+    if (
+      request.expectedStep !== undefined &&
+      request.expectedStep !== env.state().step
+    )
+      throw new Error("step_mismatch");
+    if (busy && !["stop", "get", "reset"].includes(type))
+      throw new Error("Session busy");
+    let result: unknown;
+    switch (type) {
+      case "reset":
+        validateConfig(payload.config);
+        if (
+          !["manual", "rate", "scripted", "random", "learned"].includes(
+            payload.controller ?? "manual",
+          )
+        )
+          throw new Error("Unknown controller");
+        if (payload.controller === "learned")
+          validateCheckpoint(payload.policy);
+        mode = "paused";
+        generation++;
+        epoch++;
+        stopRecording("stopped");
+        env.dispose();
+        env = new DroneEnvironment(validateConfig(payload.config));
+        controller = payload.controller ?? "manual";
+        policy = payload.policy;
+        last = performance.now();
+        accumulator = 0;
+        command = holdAction();
+        validThrough = 0;
+        result = snapshotPayload();
+        postSnapshot();
+        break;
+      case "mode":
+        if (
+          !["paused", "realtime", "lockstep", "replay"].includes(payload.mode)
+        )
+          throw new Error("Invalid clock mode");
+        if (
+          (env.state().terminated || env.state().truncated) &&
+          !["paused", "replay"].includes(payload.mode)
+        )
+          throw new Error("Reset the completed episode");
+        mode = payload.mode;
+        epoch++;
+        last = performance.now();
+        accumulator = 0;
+        result = { mode };
+        postSnapshot();
+        break;
+      case "action":
+        if (mode !== "realtime" && mode !== "lockstep")
+          throw new Error("Session paused");
+        command = validateAction(payload.action);
+        validThrough = env.state().step + 60;
+        result = { accepted: true };
+        break;
+      case "controller":
+        if (
+          !["manual", "rate", "scripted", "random", "learned"].includes(
+            payload.controller,
+          )
+        )
+          throw new Error("Unknown controller");
+        if (payload.controller === "learned" && !payload.policy)
+          throw new Error("Train a policy first");
+        if (recording)
+          throw new Error("Stop recording before changing controller");
+        controller = payload.controller;
+        policy = payload.policy;
+        command = holdAction();
+        validThrough = 0;
+        epoch++;
+        result = { controller };
+        break;
+      case "record":
+        if (recording) throw new Error("Already recording");
+        recording = newRun(env.config, controller);
+        pending = [];
+        result = recording;
+        break;
+      case "stop":
+        mode = "paused";
+        generation++;
+        epoch++;
+        stopRecording("stopped");
+        env.stop("user_stop");
+        command = holdAction();
+        accumulator = 0;
+        result = { mode, state: env.state() };
+        postSnapshot();
+        break;
+      case "scenario":
+        result = makeScenario(validateConfig(payload.config));
+        break;
+      case "get":
+        result = {
+          state: env.state(),
+          observation: env.observe(),
+          scenario: env.scenario,
+          mode,
+          controller,
+        };
+        break;
+      case "snapshot":
+        if (mode === "realtime") throw new Error("Pause before snapshot");
+        result = env.snapshot();
+        break;
+      case "restore":
+        if (mode === "realtime") throw new Error("Pause before restore");
+        env.restore(payload);
+        generation++;
+        epoch++;
+        result = { state: env.state() };
+        postSnapshot();
+        break;
+      case "advance":
+        if (mode !== "lockstep") throw new Error("Lockstep required");
+        if (
+          !Number.isInteger(payload.ticks) ||
+          payload.ticks < 1 ||
+          payload.ticks > 1200
+        )
+          throw new Error("Tick budget exceeded");
+        result = env.step(
+          validateAction(payload.action ?? selectedAction()),
+          payload.ticks,
+        );
+        break;
+      case "batch":
+        if (mode === "realtime") throw new Error("Pause before batch");
+        result = await batch(request);
+        break;
+      default:
+        throw new Error("Unknown worker request");
+    }
+    remember(key, fingerprint, result);
+    post("result", result, requestId);
+  } catch (error) {
+    if (type === "batch") busy = false;
+    post(
+      "result",
+      undefined,
+      requestId,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+await initPhysics();
+env = new DroneEnvironment(DEFAULT_CONFIG);
+self.onmessage = (event) => {
+  void handle(event.data);
+};
+post("ready", {
+  state: env.state(),
+  scenario: env.scenario,
+  observation: env.observe(),
+  mode,
+  controller,
+});
+setInterval(() => {
+  if (mode !== "realtime" || busy) return;
+  const now = performance.now();
+  const elapsed = (now - last) / 1000;
+  last = now;
+  if (elapsed > 0.75) {
+    mode = "paused";
+    post("interruption", { reason: "Tab suspended; resume explicitly." });
+    return;
+  }
+  accumulator += elapsed;
+  const interval = env.config.dt * ACTION_REPEAT;
+  if (accumulator > 0.25) {
+    post("overload", { discardedSeconds: accumulator - 0.25 });
+    accumulator = 0.25;
+  }
+  let n = 0;
+  while (accumulator >= interval && mode === "realtime" && n++ < 8) {
+    accumulator -= interval;
+    tick();
+  }
+}, 8);

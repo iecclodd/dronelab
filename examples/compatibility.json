@@ -1,0 +1,68 @@
+{
+  "url": "http://127.0.0.1:4173",
+  "startedAt": "2026-09-29T06:09:06.130Z",
+  "results": [
+    {
+      "browser": "firefox",
+      "pass": true,
+      "elapsedMs": 6050,
+      "renderer": {
+        "canvas": true,
+        "webgl": true,
+        "fpsText": "FPS 56"
+      },
+      "scripted": {
+        "success": true,
+        "reason": "success",
+        "steps": 226,
+        "throughput": 17384.615384615387
+      },
+      "checkpoint": {
+        "hash": "bc2ec287",
+        "samples": 661,
+        "parityMaxError": 8.121424466267513e-8
+      },
+      "indexedDb": {
+        "count": 1,
+        "found": true
+      },
+      "learnedPlayback": {
+        "step": 88,
+        "policyHash": "bc2ec287"
+      },
+      "consoleErrors": [],
+      "pageErrors": []
+    },
+    {
+      "browser": "edge",
+      "pass": true,
+      "elapsedMs": 4897,
+      "renderer": {
+        "canvas": true,
+        "webgl": true,
+        "fpsText": "FPS 122"
+      },
+      "scripted": {
+        "success": true,
+        "reason": "success",
+        "steps": 226,
+        "throughput": 3766.666666666667
+      },
+      "checkpoint": {
+        "hash": "5094e435",
+        "samples": 661,
+        "parityMaxError": 8.121424477369743e-8
+      },
+      "indexedDb": {
+        "count": 1,
+        "found": true
+      },
+      "learnedPlayback": {
+        "step": 88,
+        "policyHash": "5094e435"
+      },
+      "consoleErrors": [],
+      "pageErrors": []
+    }
+  ]
+}

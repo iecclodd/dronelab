@@ -17,7 +17,7 @@ type BrowserResult = { generation: number; authorityEpoch: number; authority?: {
 const browserUrl = process.env.DRONELAB_BROWSER_URL ?? "http://127.0.0.1:4173";
 const browserOrigin = new URL(browserUrl).origin;
 const testDirectory = dirname(fileURLToPath(import.meta.url));
-const outputRoot = resolve(testDirectory, "../../../../../outputs/dronelab");
+const outputRoot = resolve(testDirectory, "../../..");
 const moduleLoader = createRequire(import.meta.url);
 
 function assert(condition: unknown, message: string): asserts condition {

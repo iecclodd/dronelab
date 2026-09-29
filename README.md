@@ -38,11 +38,15 @@ Copy-Item .env.example .env
 npm run build
 npm test
 npm run smoke
-npm start
+node --env-file=.env dist/index.js
 ```
 
 It requires Node 20+, a high-entropy `DRONELAB_RELAY_SECRET`, and exact allowed HTTPS origins. Provider credentials and models are unset by default, so the server is intentionally unconfigured until an operator supplies them. See [AI/MCP relay](docs/ai-mcp.md).
 
 ## Evidence and scope
+
+The latest executed checks and limitations are in [VALIDATION.md](docs/VALIDATION.md). The repository includes a real [trained checkpoint](examples/hover-bc-checkpoint.json), its [evaluation](examples/evaluation.json), a [scripted hover run](examples/hover-run.json), and [browser compatibility measurements](examples/compatibility.json). These are deliberate small examples, not synthetic training results. The checkpoint was trained in Chromium with TFJS CPU on 661 demonstration samples; its held-out success rate was 5/8 versus 8/8 for scripted control. Use the website's Train policy button to create and save a new policy on your device.
+
+Keyboard controls are W/S north/south, A/D west/east, Space/Shift up/down, and Q/E yaw. In Rate mode the translational controls become body-rate commands. The game pauses when the window loses focus; resume explicitly. Open `#experiment` or `#review` to link directly to a view. Touch-only flight controls are not provided.
 
 The simulation uses ENU coordinates and FLU body axes, fixed-step transitions, seeded sensor noise/delay, explicit reward components, and terminal transition preservation. It is a browser gameplay model, not a real aircraft model. PPO/RL, image/depth observations, farm execution, and live provider verification are not implemented. See [architecture](docs/architecture.md) and [roadmap](docs/roadmap.md).
