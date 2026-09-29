@@ -1,0 +1,252 @@
+{
+  "startedAt": "2026-09-29T05:57:59.615Z",
+  "finishedAt": "2026-09-29T05:58:08.421Z",
+  "url": "http://127.0.0.1:4173",
+  "assertions": {
+    "apiReady": true,
+    "trainingCancellationRejected": true,
+    "trainingClientReusable": true,
+    "batchStopRejected": true,
+    "batchStopNoSuccessfulResult": true,
+    "lossFalls": true,
+    "hashMatches": true,
+    "pureTfParity": true,
+    "persistedAfterReload": true,
+    "heldoutControllersAndSeeds": true
+  },
+  "cancellation": {
+    "trainingCancellation": {
+      "fulfilled": false,
+      "message": "Training cancelled"
+    },
+    "batchCancellation": [
+      {
+        "status": "rejected",
+        "reason": "Batch cancelled"
+      },
+      {
+        "status": "fulfilled",
+        "value": {
+          "mode": "paused",
+          "state": {
+            "step": 4,
+            "time": 0.03333333333333333,
+            "position": [
+              -0.2085942029953003,
+              -0.07766081392765045,
+              1.4961189031600952
+            ],
+            "velocity": [
+              2.049509895130086E-08,
+              8.516914249412366E-07,
+              -0.19257989525794983
+            ],
+            "quaternion": [
+              -1.287429768126458E-05,
+              3.0992850952316076E-07,
+              -9.307400183899972E-09,
+              1
+            ],
+            "angularVelocity": [
+              -0.0017676659626886249,
+              4.257084219716489E-05,
+              -1.2746426136800437E-06
+            ],
+            "motors": [
+              0.2496805973332477,
+              0.2505759863528068,
+              0.2505919884405439,
+              0.24970749397008313
+            ],
+            "battery": 0.9999963080369224,
+            "energy": 0.004430355693044782,
+            "target": [
+              0,
+              8,
+              2
+            ],
+            "targetIndex": 0,
+            "collisions": 0,
+            "terminated": false,
+            "truncated": true,
+            "reason": "user_stop"
+          }
+        }
+      }
+    ],
+    "demoTransitionCounts": [
+      54,
+      55,
+      55,
+      55,
+      55,
+      55,
+      55,
+      55,
+      55,
+      56,
+      55,
+      56,
+      64,
+      65,
+      65,
+      62
+    ],
+    "trainerReuse": {
+      "hash": "5902bd79",
+      "epochs": 1
+    }
+  },
+  "training": {
+    "loss": [
+      0.09764322889870125,
+      0.038365913704375816,
+      0.01764364927477357,
+      0.008229038833095248,
+      0.005367253485041334,
+      0.003983640346574666,
+      0.00307991450410139,
+      0.001926883278448422,
+      0.0015988255741424104,
+      0.0014880238329490108,
+      0.001304236033920103,
+      0.0011609805342438384,
+      0.0010514610249559013,
+      0.0009838421645880016,
+      0.0009095899252793026,
+      0.0008505492755768428,
+      0.0008040672271518084,
+      0.0007587588573073329,
+      0.0007179035199665198,
+      0.0006825628325148696,
+      0.0006513733132538046,
+      0.0006206677302840742,
+      0.0005935648866223225,
+      0.0005622679305050815
+    ],
+    "validationLoss": [
+      0.3333539068698883,
+      0.36046552658081055,
+      0.39104628562927246,
+      0.36310505867004395,
+      0.3113687038421631,
+      0.28185543417930603,
+      0.28491929173469543,
+      0.29725101590156555,
+      0.2941746413707733,
+      0.2832415699958801,
+      0.2780177593231201,
+      0.276206910610199,
+      0.27502796053886414,
+      0.27407214045524597,
+      0.2693259119987488,
+      0.26662248373031616,
+      0.2646026909351349,
+      0.2618427574634552,
+      0.2601185441017151,
+      0.25853949785232544,
+      0.2547304630279541,
+      0.2529240548610687,
+      0.2529451847076416,
+      0.25056082010269165
+    ],
+    "samples": 661,
+    "epochs": 24,
+    "parityMaxError": 8.121424477369743E-08,
+    "trainingSeeds": [
+      10001,
+      10002,
+      10003,
+      10004,
+      10005,
+      10006,
+      10007,
+      10008,
+      10009,
+      10010,
+      10011,
+      10012
+    ],
+    "validationSeeds": [
+      20001,
+      20002,
+      20003,
+      20004
+    ]
+  },
+  "persistence": {
+    "count": 1,
+    "policy": {
+      "id": "bc-41001-1790661483999",
+      "hash": "5094e435",
+      "epochs": 24,
+      "scenario": "hover"
+    }
+  },
+  "heldout": {
+    "policyConfig": {
+      "scenario": "hover",
+      "seed": 42,
+      "wind": [
+        0,
+        0,
+        0
+      ],
+      "noise": 0,
+      "delaySteps": 0,
+      "maxSeconds": 30,
+      "dt": 0.008333333333333333
+    },
+    "summary": {
+      "scripted": {
+        "successes": 8,
+        "reasons": [
+          {
+            "count": 8,
+            "reason": "success"
+          }
+        ],
+        "runs": 8,
+        "meanReward": 10.203354,
+        "meanTrackingError": 0.658122
+      },
+      "random": {
+        "successes": 1,
+        "reasons": [
+          {
+            "count": 3,
+            "reason": "collision"
+          },
+          {
+            "count": 1,
+            "reason": "success"
+          },
+          {
+            "count": 4,
+            "reason": "timeout"
+          }
+        ],
+        "runs": 8,
+        "meanReward": -1.225112,
+        "meanTrackingError": 1.48547
+      },
+      "learned": {
+        "successes": 5,
+        "reasons": [
+          {
+            "count": 3,
+            "reason": "collision"
+          },
+          {
+            "count": 5,
+            "reason": "success"
+          }
+        ],
+        "runs": 8,
+        "meanReward": 3.883935,
+        "meanTrackingError": 1.514196
+      }
+    }
+  },
+  "errors": []
+}

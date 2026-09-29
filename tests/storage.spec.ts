@@ -26,12 +26,12 @@ test('persists, reload-recovers chunks, deletes, and bounds run history', async 
     const { DEFAULT_CONFIG, ZERO_ACTION } = await import('/packages/contracts/index.ts');
     const store = await import('/apps/web/src/storage.ts');
     await initPhysics();
-    const env = new DroneEnvironment({ ...DEFAULT_CONFIG, scenario: 'free', maxSeconds: 2 });
+    const env = new DroneEnvironment({ ...DEFAULT_CONFIG, scenario: 'free' as const, maxSeconds: 2 });
     const transitions = [env.step(ZERO_ACTION, 4).transition, env.step(ZERO_ACTION, 4).transition];
     env.dispose();
     const run = {
       id: 'recover-me', createdAt: '2026-01-01T00:00:00.000Z', status: 'recording' as const,
-      config: { ...DEFAULT_CONFIG, scenario: 'free', maxSeconds: 2 }, controller: 'manual' as const,
+      config: { ...DEFAULT_CONFIG, scenario: 'free' as const, maxSeconds: 2 }, controller: 'manual' as const,
       manifest: { schema: 'run-v1' }, transitions: [],
       metrics: { success: false, reason: 'running', seconds: 0, collisions: 0, trackingError: 0, energy: 0, reward: 0, steps: 0, wallSeconds: 0, throughput: 0 },
     };
@@ -68,9 +68,9 @@ test('exports a validated real sim-core run as complete ZIP artifacts', async ({
     const { DEFAULT_CONFIG } = await import('/packages/contracts/index.ts');
     const store = await import('/apps/web/src/storage.ts');
     await initPhysics();
-    const env = new DroneEnvironment({ ...DEFAULT_CONFIG, scenario: 'free', maxSeconds: 2 });
+    const env = new DroneEnvironment({ ...DEFAULT_CONFIG, scenario: 'free' as const, maxSeconds: 2 });
     const transition = env.step(env.scriptedAction(), 4).transition;
-    const run = { id: 'exported-run', createdAt: '2026-03-01T00:00:00.000Z', status: 'completed' as const, config: { ...DEFAULT_CONFIG, scenario: 'free', maxSeconds: 2 }, controller: 'scripted' as const, manifest: { schema: 'run-v1' }, transitions: [transition], metrics: { success: false, reason: '', seconds: transition.state.time, collisions: 0, trackingError: 0, energy: 0, reward: transition.reward, steps: transition.endStep, wallSeconds: 0, throughput: 0 } };
+    const run = { id: 'exported-run', createdAt: '2026-03-01T00:00:00.000Z', status: 'completed' as const, config: { ...DEFAULT_CONFIG, scenario: 'free' as const, maxSeconds: 2 }, controller: 'scripted' as const, manifest: { schema: 'run-v1' }, transitions: [transition], metrics: { success: false, reason: '', seconds: transition.state.time, collisions: 0, trackingError: 0, energy: 0, reward: transition.reward, steps: transition.endStep, wallSeconds: 0, throughput: 0 } };
     store.exportRun(run);
     env.dispose();
   });
@@ -109,7 +109,7 @@ test('stores and reloads a clearly synthetic checkpoint fixture byte-for-byte', 
     const { checkpointHash } = await import('/packages/learning/index.ts');
     const { savePolicy } = await import('/apps/web/src/storage.ts');
     const shapes = [[20, 32], [32], [32, 32], [32], [32, 4], [4]];
-    const checkpoint: any = { version: 'bc-v1', id: 'synthetic-checkpoint', createdAt: '2026-05-01T00:00:00.000Z', trainingSeed: 1, trainingSeeds: [1], validationSeeds: [2], testSeeds: [3], scenario: 'hover', config: DEFAULT_CONFIG, mean: Array(20).fill(0), std: Array(20).fill(1), layers: shapes.map(shape => ({ shape, data: Array(shape.reduce((n, x) => n * x, 1)).fill(0) })), loss: [1], validationLoss: [1], samples: 1, epochs: 1, parityMaxError: 0, hash: '' };
+    const checkpoint: any = { version: 'bc-v1', id: 'synthetic-checkpoint', createdAt: '2026-05-01T00:00:00.000Z', trainingSeed: 1, trainingSeeds: [1], validationSeeds: [2], testSeeds: [3], scenario: 'hover' as const, config: DEFAULT_CONFIG, mean: Array(20).fill(0), std: Array(20).fill(1), layers: shapes.map(shape => ({ shape, data: Array(shape.reduce((n, x) => n * x, 1)).fill(0) })), loss: [1], validationLoss: [1], samples: 1, epochs: 1, parityMaxError: 0, hash: '' };
     checkpoint.hash = checkpointHash(checkpoint);
     await savePolicy(checkpoint);
     return JSON.stringify(checkpoint);
@@ -118,3 +118,4 @@ test('stores and reloads a clearly synthetic checkpoint fixture byte-for-byte', 
   const restored = await page.evaluate(async () => JSON.stringify((await (await import('/apps/web/src/storage.ts')).listPolicies())[0]));
   expect(restored).toBe(saved);
 });
+
