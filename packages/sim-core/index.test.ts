@@ -24,7 +24,7 @@ describe('DroneEnvironment', () => {
     const env = new DroneEnvironment(config({ scenario: 'gates', maxSeconds: 30, seed: 6 })); env.reset();
     let result = env.step(env.scriptedAction(), 4);
     for (let i = 0; i < 900 && !result.state.terminated && !result.state.truncated; i++) result = env.step(env.scriptedAction(result.observation), 4);
-    expect(result.state.reason).toBe('success'); env.dispose();
+    expect(result.state.reason).toBe('success'); expect(result.state.targetIndex).toBe(2); env.dispose();
   });
 
   it('keeps mixer signs and manual yaw bounded', () => {
@@ -71,12 +71,42 @@ describe('DroneEnvironment', () => {
     expect(hit.state.reason).toBe('collision'); expect(hit.state.collisions).toBe(1); env.dispose();
   });
 
+  it('requires ordered in-opening gate-plane crossings, never gate proximity', () => {
+    const env = new DroneEnvironment(config({ scenario: 'gates' })); const drone = (env as any).drone;
+    drone.setTranslation({ x: 0, y: 4.7, z: 2 }, true); env.step({ kind: 'rate', rates: [0, 0, 0], thrust: .42 }, 1);
+    expect(env.state().targetIndex).toBe(0); expect(env.state().terminated).toBe(false);
+    for (const y of [5.1, 9.1, 13.1]) { drone.setTranslation({ x: 0, y, z: 2 }, true); drone.setLinvel({ x: 0, y: 0, z: 0 }, true); env.step({ kind: 'rate', rates: [0, 0, 0], thrust: .42 }, 1); }
+    expect(env.state().reason).toBe('success'); expect(env.state().targetIndex).toBe(2); env.dispose();
+  });
+
   it('requires physical pad contact for a gentle landing success', () => {
     const env = new DroneEnvironment(config({ scenario: 'landing', maxSeconds: 3 })); const drone = (env as any).drone;
     drone.setTranslation({ x: 0, y: 0, z: .11 }, true); drone.setLinvel({ x: 0, y: 0, z: 0 }, true);
     let result = env.step({ kind: 'rate', rates: [0, 0, 0], thrust: .423 }, 1);
     for (let i = 0; i < 40 && !result.state.terminated; i++) result = env.step({ kind: 'rate', rates: [0, 0, 0], thrust: .423 }, 1);
     expect(result.state.reason).toBe('success'); env.dispose();
+  });
+
+  it('fails a hard landing immediately using pre-impact speed', () => {
+    const env = new DroneEnvironment(config({ scenario: 'landing', maxSeconds: 3 })); const drone = (env as any).drone;
+    drone.setTranslation({ x: 0, y: 0, z: .5 }, true); drone.setLinvel({ x: 0, y: 0, z: -5 }, true);
+    let result = env.step({ kind: 'rate', rates: [0, 0, 0], thrust: 0 }, 1);
+    for (let i = 0; i < 30 && !result.state.terminated; i++) result = env.step({ kind: 'rate', rates: [0, 0, 0], thrust: 0 }, 1);
+    expect(result.state.reason).toBe('collision'); expect(result.state.terminated).toBe(true); env.dispose();
+  });
+
+  it('mixes manual body roll in body axes after a 90-degree yaw', () => {
+    const env = new DroneEnvironment(config()); const drone = (env as any).drone; const s = Math.SQRT1_2;
+    drone.setRotation({ x: 0, y: 0, z: s, w: s }, true); (env as any).yaw = Math.PI / 2;
+    for (let i = 0; i < 12; i++) env.step({ kind: 'rate', rates: [1, 0, 0], thrust: .42 }, 1);
+    const w = env.state().angularVelocity; expect(Math.abs(w[1])).toBeGreaterThan(Math.abs(w[0]) * 3); expect(w[1]).toBeGreaterThan(0); env.dispose();
+  });
+
+  it('keeps navigation velocity commands in the ENU world frame after yaw', () => {
+    const env = new DroneEnvironment(config()); const drone = (env as any).drone; const s = Math.SQRT1_2;
+    drone.setRotation({ x: 0, y: 0, z: s, w: s }, true); (env as any).yaw = Math.PI / 2;
+    for (let i = 0; i < 100; i++) env.step({ kind: 'nav', velocity: [1.5, 0, 0], yawRate: 0 }, 1);
+    const velocity = env.state().velocity; expect(velocity[0]).toBeGreaterThan(.05); expect(Math.abs(velocity[0])).toBeGreaterThan(Math.abs(velocity[1]) * 3); env.dispose();
   });
 
   it('terminates when leaving the arena and velocity control has no hidden target pull', () => {
@@ -98,6 +128,14 @@ describe('DroneEnvironment', () => {
       const env = new DroneEnvironment(config({ scenario, seed: scenario === 'hover' ? 11 : 6, maxSeconds: 30 })); let result = env.step(env.scriptedAction(), 4);
       for (let i = 0; i < 900 && !result.state.terminated && !result.state.truncated; i++) result = env.step(env.scriptedAction(result.observation), 4);
       expect(result.state.reason).toBe('success'); expect(result.state.collisions).toBe(0); env.dispose();
+    }
+  });
+
+  it('measures all scripted missions across 16 seeded resets', () => {
+    for (const scenario of ['hover', 'gates', 'landing'] as const) for (let seed = 0; seed < 16; seed++) {
+      const env = new DroneEnvironment(config({ scenario, seed, maxSeconds: 35 })); let result = env.step(env.scriptedAction(), 4);
+      for (let i = 0; i < 1100 && !result.state.terminated && !result.state.truncated; i++) result = env.step(env.scriptedAction(result.observation), 4);
+      expect(result.state.reason, `${scenario} seed ${seed}`).toBe('success'); expect(result.state.collisions).toBe(0); env.dispose();
     }
   });
 });

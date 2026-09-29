@@ -20,8 +20,9 @@ useful for browser gameplay and navigation experiments, not aircraft design.
 Navigation actions contain bounded ENU velocity (±3 m/s) and yaw rate
 (±1.5 rad/s). They enter a velocity-only loop that produces a desired
 acceleration and attitude, followed by an attitude/rate loop and a four-motor
-mixer. Rate actions carry normalized FLU body rates (converted to world rates
-before feedback) and collective thrust. The
+mixer. Rate actions carry normalized FLU body rates; measured angular velocity,
+rate error and mixer torques all remain in body axes, and only physical forces
+and yaw reaction torque are rotated to world axes. The
 scripted controller reads the same delayed/noisy `Observation` supplied to a
 learned controller; it never reads hidden ground truth.  Random actions are
 only a baseline.
@@ -30,9 +31,14 @@ Observations contain relative target, velocity, quaternion, angular velocity,
 six axis-aligned normalized range values and battery (20 values total).  Sensor
 noise and delay are driven by a seeded PRNG.  Snapshots include Rapier's world
 bytes plus controller/motor state, PRNG state and the delayed observation
-queue. Gates are four physical frame bars, not solid volumes. Collision entries
-are counted once; gate bars and arena exit terminate the episode. Landing only
-succeeds after gentle physical contact with the pad. Each transition sums tick
+queue. Gates are four physical frame bars, not solid volumes. A gate course
+finishes only after ordered crossings of all three gate planes within their
+openings; its observation target is a point beyond each plane so the scripted
+baseline flies through instead of stopping at the centre. Collision entries are
+counted once; gate bars and arena exit terminate the episode. Landing only
+succeeds after gentle physical contact with the pad, and a pre-impact vertical
+speed, horizontal speed or tilt above the hard-landing limits fails immediately.
+Each transition sums tick
 reward components: tracking and energy are continuous rates scaled by the fixed
 step, while progress/collision/success are event terms. A repeated step stops
 immediately at terminal or timeout and records its actual number of physics ticks.

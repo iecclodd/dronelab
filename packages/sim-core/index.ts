@@ -46,9 +46,11 @@ function scenarioFor(config: SimConfig, rng: Rng): Scenario {
   const jitter = (): number => rng.signed() * 0.25;
   if (config.scenario === 'gates') return {
     id: 'gates', name: 'Gate course', description: 'Follow the safe, ordered gates.', spawn: [jitter(), jitter(), 1.5],
-    targets: [[0, 5, 2], [2.5, 9, 2.4], [-1.5, 13, 1.8]], pad: [-1.5, 13, 0],
+    // Guidance points sit beyond the physical planes so the scripted policy
+    // crosses each gate rather than stopping at its centre.
+    targets: [[0, 6.2, 2], [0, 10.2, 2], [0, 14.2, 2]], pad: [0, 13, 0],
     // Gates are four real collision bars, never a solid invisible wall.
-    obstacles: [[0, 5, 2], [2.5, 9, 2.4], [-1.5, 13, 1.8]].flatMap((p, i) => gateFrame(`gate-${i}`, p as V3)),
+    obstacles: [[0, 5, 2], [0, 9, 2], [0, 13, 2]].flatMap((p, i) => gateFrame(`gate-${i}`, p as V3)),
   };
   if (config.scenario === 'landing') return { id: 'landing', name: 'Landing pad', description: 'Descend gently onto the pad.', spawn: [jitter(), -3 + jitter(), 2.2], targets: [[0, 0, .16]], pad: [0, 0, 0], obstacles: [] };
   if (config.scenario === 'free') return { id: 'free', name: 'Free flight', description: 'Fly freely inside the test range.', spawn: [jitter(), jitter(), 1.5], targets: [[0, 8, 2]], pad: [0, 0, 0], obstacles: [] };
@@ -79,6 +81,7 @@ function rotate(q: Quat, v: V3): V3 {
   const [x, y, z, w] = q; const uv = cross([x, y, z], v); const uuv = cross([x, y, z], uv);
   return add(v, add(mul(uv, 2 * w), mul(uuv, 2)));
 }
+function unrotate(q: Quat, v: V3): V3 { return rotate([-q[0], -q[1], -q[2], q[3]], v); }
 function qFromBodyAxes(x: V3, y: V3, z: V3): Quat {
   const m00 = x[0], m01 = y[0], m02 = z[0], m10 = x[1], m11 = y[1], m12 = z[1], m20 = x[2], m21 = y[2], m22 = z[2];
   const trace = m00 + m11 + m22;
@@ -116,6 +119,7 @@ export class DroneEnvironment {
   private tick = 0; private decision = 0; private targetIndex = 0; private collisions = 0;
   private stopped = false; private terminated = false; private truncated = false; private reason = ''; private wasOutOfBounds = false;
   private energy = 0; private yaw = 0; private lastDistance = 0; private settledTicks = 0;
+  private previousPosition: V3 = [0, 0, 0];
   private initialized = false;
 
   constructor(config: SimConfig) {
@@ -162,10 +166,15 @@ export class DroneEnvironment {
     this.rng = new Rng(seed); this.scenario = scenarioFor({ ...this.config, seed }, this.rng);
     this.tick = this.decision = this.targetIndex = this.collisions = this.energy = this.yaw = this.settledTicks = 0;
     this.motor = [0, 0, 0, 0]; this.prior = copyAction(ZERO_ACTION); this.queue = []; this.activeContacts.clear(); this.contactTags.clear(); this.padCollider = undefined; this.stopped = this.terminated = this.truncated = this.wasOutOfBounds = false; this.reason = '';
-    this.initialized = false; this.ensure(); this.lastDistance = length(sub(this.target(), this.rawState().position));
+    this.initialized = false; this.ensure(); this.previousPosition = this.rawState().position; this.lastDistance = length(sub(this.target(), this.previousPosition));
     this.delivered = this.sampleObservation(this.tick); return copyObservation(this.delivered);
   }
   private target(): V3 { return this.scenario.targets[Math.min(this.targetIndex, this.scenario.targets.length - 1)]!; }
+  private gateCenter(index: number): V3 {
+    const gate = this.scenario.obstacles.find(obstacle => obstacle.id === `gate-${index}-top`);
+    if (!gate) throw new Error(`Missing gate ${index}.`);
+    return [gate.position[0], gate.position[1], gate.position[2] - 1.35];
+  }
   private rawState(): PhysicalState {
     this.ensure(); const p = this.drone.translation(), v = this.drone.linvel(), q = this.drone.rotation(), w = this.drone.angvel();
     return { step: this.tick, time: this.tick * this.config.dt, position: [p.x, p.y, p.z], velocity: [v.x, v.y, v.z], quaternion: [q.x, q.y, q.z, q.w], angularVelocity: [w.x, w.y, w.z], motors: [...this.motor], battery: clamp(1 - this.energy / 1200, 0, 1), energy: this.energy, target: [...this.target()], targetIndex: this.targetIndex, collisions: this.collisions, terminated: this.terminated, truncated: this.truncated, reason: this.reason };
@@ -193,9 +202,9 @@ export class DroneEnvironment {
     this.ensure(); while (this.queue.length && this.queue[0]!.deliveryStep <= this.tick) this.delivered = this.queue.shift()!; return copyObservation(this.delivered);
   }
   private controller(action: Action): number[] {
-    const s = this.rawState(); const q = s.quaternion as Quat; const bodyZ = rotate(q, [0, 0, 1]); const rates = s.angularVelocity;
+    const s = this.rawState(); const q = s.quaternion as Quat; const bodyZ = rotate(q, [0, 0, 1]); const bodyRates = unrotate(q, s.angularVelocity);
     let thrust = 0; let wantedRates: V3 = [0, 0, 0];
-    if (action.kind === 'rate') { thrust = action.thrust * 4 * MAX_THRUST; wantedRates = rotate(q, mul(action.rates, 4)); }
+    if (action.kind === 'rate') { thrust = action.thrust * 4 * MAX_THRUST; wantedRates = mul(action.rates, 4); }
     else {
       const velError = sub(action.velocity, s.velocity);
       // Navigation is strictly velocity/yaw input. Mission position guidance is
@@ -204,12 +213,13 @@ export class DroneEnvironment {
       const force = add([this.config.wind[0] * .14, this.config.wind[1] * .14, MASS * 9.81], mul(desiredAccel, MASS));
       const wantedZ = unit(force); const yaw = this.yaw; const heading: V3 = [Math.cos(yaw), Math.sin(yaw), 0];
       const wantedY = unit(cross(wantedZ, heading)); const wantedX = unit(cross(wantedY, wantedZ));
-      const wanted = qFromBodyAxes(wantedX, wantedY, wantedZ); const attitude = qErrorVector(q, wanted);
-      wantedRates = clampV(add(mul(attitude, 1.7), [0, 0, clamp(action.yawRate, -YAW_LIMIT, YAW_LIMIT)]) as V3, 2.5);
+      const wanted = qFromBodyAxes(wantedX, wantedY, wantedZ); const attitudeBody = unrotate(q, qErrorVector(q, wanted));
+      const yawRateBody = unrotate(q, [0, 0, clamp(action.yawRate, -YAW_LIMIT, YAW_LIMIT)]);
+      wantedRates = clampV(add(mul(attitudeBody, 1.7), yawRateBody), 2.5);
       thrust = clamp(dot(force, bodyZ), 0, 4 * MAX_THRUST);
     }
     // Gains match the explicit quadrotor inertia and avoid mixer saturation.
-    const rateError = sub(wantedRates, rates); const torque = [rateError[0] * .004, rateError[1] * .004, rateError[2] * .0008] as V3;
+    const rateError = sub(wantedRates, bodyRates); const torque = [rateError[0] * .004, rateError[1] * .004, rateError[2] * .0008] as V3;
     const a = ARMS[0]![0], c = YAW_COEFF;
     const f = [thrust / 4 + torque[0] / (4 * a) - torque[1] / (4 * a) + torque[2] / (4 * c), thrust / 4 - torque[0] / (4 * a) - torque[1] / (4 * a) - torque[2] / (4 * c), thrust / 4 - torque[0] / (4 * a) + torque[1] / (4 * a) + torque[2] / (4 * c), thrust / 4 + torque[0] / (4 * a) + torque[1] / (4 * a) - torque[2] / (4 * c)];
     // Preserve the requested collective as far as possible when saturation occurs.
@@ -219,7 +229,7 @@ export class DroneEnvironment {
   private tickOnce(requested: Action): RewardComponents {
     const dt = this.config.dt; const targetMotor = this.controller(requested);
     this.motor = this.motor.map((m, i) => m + (targetMotor[i]! - m) * clamp(dt / MOTOR_TAU, 0, 1));
-    const s = this.rawState(); const q = s.quaternion as Quat;
+    const s = this.rawState(); const q = s.quaternion as Quat; const bodyZ = rotate(q, [0, 0, 1]);
     // External forces persist in Rapier until explicitly cleared. Evaluate
     // rotor lift, drag and wind anew every fixed tick.
     this.drone.resetForces(true); this.drone.resetTorques(true);
@@ -236,20 +246,29 @@ export class DroneEnvironment {
     const tags = entered.map(handle => this.contactTags.get(handle)); const onPad = this.padCollider !== undefined && contacts.has(this.padCollider.handle);
     let collision = 0;
     if (tags.some(tag => tag === 'obstacle' || (tag === 'ground' && this.config.scenario !== 'landing'))) { this.collisions++; collision = -1; this.terminated = true; this.reason = 'collision'; }
+    const touchedSurface = tags.some(tag => tag === 'ground' || tag === 'pad'); const preHorizontal = Math.hypot(s.velocity[0], s.velocity[1]); const preTilt = dot(bodyZ, [0, 0, 1]);
+    if (this.config.scenario === 'landing' && touchedSurface && (s.velocity[2] < -1.2 || preHorizontal > 1.2 || preTilt < .82)) { this.collisions++; collision = -1; this.terminated = true; this.reason = 'collision'; }
     const outOfBounds = Math.abs(next.position[0]) > ARENA_HALF_EXTENT || Math.abs(next.position[1]) > ARENA_HALF_EXTENT || next.position[2] > ARENA_HALF_EXTENT;
     if (outOfBounds && !this.wasOutOfBounds) { this.collisions++; collision = -1; this.terminated = true; this.reason = 'out_of_bounds'; } this.wasOutOfBounds = outOfBounds;
     let success = 0;
     const gate = this.config.scenario === 'gates'; const gentle = length(next.velocity) < (gate ? 1.4 : 1.1); const arrivalRadius = gate ? 1.2 : .48;
     if (this.config.scenario === 'free') { /* free flight is only time bounded */ }
-    else if (gate && d < 1.0) {
-      if (this.targetIndex + 1 < this.scenario.targets.length) { this.targetIndex++; this.lastDistance = length(sub(this.target(), next.position)); }
-      else { this.terminated = true; this.reason = 'success'; success = 10; }
+    else if (gate) {
+      const center = this.gateCenter(this.targetIndex); const crossed = this.previousPosition[1] < center[1] && next.position[1] >= center[1];
+      const fraction = crossed ? clamp((center[1] - this.previousPosition[1]) / Math.max(next.position[1] - this.previousPosition[1], 1e-9), 0, 1) : 0;
+      const crossing: V3 = add(this.previousPosition, mul(sub(next.position, this.previousPosition), fraction));
+      const insideOpening = Math.abs(crossing[0] - center[0]) < 1.1 && Math.abs(crossing[2] - center[2]) < 1.1;
+      if (crossed && insideOpening) {
+        if (this.targetIndex < 2) { this.targetIndex++; this.lastDistance = length(sub(this.target(), next.position)); }
+        else { this.terminated = true; this.reason = 'success'; success = 10; }
+      }
     } else if (this.config.scenario === 'landing') {
-      const horizontal = Math.hypot(next.velocity[0], next.velocity[1]); const overPad = Math.hypot(next.position[0] - this.scenario.pad[0], next.position[1] - this.scenario.pad[1]) < .38;
+      const horizontal = Math.hypot(next.velocity[0], next.velocity[1]); const overPad = Math.hypot(next.position[0] - this.scenario.pad[0], next.position[1] - this.scenario.pad[1]) < .52;
       if (onPad && overPad && horizontal < .45 && Math.abs(next.velocity[2]) < .35) this.settledTicks++; else this.settledTicks = 0;
       if (this.settledTicks >= 12) { this.terminated = true; this.reason = 'success'; success = 10; }
     } else if (d < arrivalRadius && gentle) { this.settledTicks++; if (this.settledTicks >= 20) { this.terminated = true; this.reason = 'success'; success = 10; } }
     else this.settledTicks = 0;
+    this.previousPosition = next.position;
     if (this.tick * dt >= this.config.maxSeconds) { this.truncated = true; this.reason ||= 'timeout'; }
     const tracking = -Math.min(d, 8) * .04 * dt, energy = -this.motor.reduce((x, m) => x + m * m, 0) * .003 * dt;
     const total = tracking + progress + energy + collision + success;
@@ -267,18 +286,27 @@ export class DroneEnvironment {
     // The velocity stabilizer already damps measured velocity.  This planner
     // contributes only a position-derived velocity setpoint from policy input.
     const vel = clampV(add(mul(observation.relativeTarget, .55), mul(observation.velocity, -.35)), NAV_LIMIT);
+    // The landing baseline first centres laterally at a safe 1.2 m approach
+    // height, then descends at a bounded rate. Inputs remain observation-only.
+    if (this.config.scenario === 'landing') {
+      const lateral = Math.hypot(observation.relativeTarget[0], observation.relativeTarget[1]);
+      if (lateral > .5) vel[2] = clamp((1.2 - observation.position[2]) * .7, -.35, .45);
+      else vel[2] = clamp(observation.relativeTarget[2] * .45 - observation.velocity[2] * .15, -.18, .35);
+      vel[0] = clamp(observation.relativeTarget[0] * .4 - observation.velocity[0] * .6, -.4, .4);
+      vel[1] = clamp(observation.relativeTarget[1] * .4 - observation.velocity[1] * .6, -.4, .4);
+    }
     return { kind: 'nav', velocity: vel, yawRate: 0 };
   }
   randomAction(): Action { return { kind: 'nav', velocity: [this.rng.signed() * NAV_LIMIT, this.rng.signed() * NAV_LIMIT, this.rng.signed() * NAV_LIMIT], yawRate: this.rng.signed() * YAW_LIMIT }; }
   snapshot(): any {
-    this.ensure(); return { version: 'sim-v1', config: this.config, scenario: this.scenario, rapier: Array.from(this.world.takeSnapshot()), rng: this.rng.snapshot(), motor: [...this.motor], prior: copyAction(this.prior), queue: this.queue.map(copyObservation), delivered: copyObservation(this.delivered), activeContacts: [...this.activeContacts], tick: this.tick, decision: this.decision, targetIndex: this.targetIndex, collisions: this.collisions, stopped: this.stopped, terminated: this.terminated, truncated: this.truncated, reason: this.reason, wasOutOfBounds: this.wasOutOfBounds, energy: this.energy, yaw: this.yaw, lastDistance: this.lastDistance, settledTicks: this.settledTicks };
+    this.ensure(); return { version: 'sim-v1', config: this.config, scenario: this.scenario, rapier: Array.from(this.world.takeSnapshot()), rng: this.rng.snapshot(), motor: [...this.motor], prior: copyAction(this.prior), queue: this.queue.map(copyObservation), delivered: copyObservation(this.delivered), activeContacts: [...this.activeContacts], previousPosition: [...this.previousPosition], tick: this.tick, decision: this.decision, targetIndex: this.targetIndex, collisions: this.collisions, stopped: this.stopped, terminated: this.terminated, truncated: this.truncated, reason: this.reason, wasOutOfBounds: this.wasOutOfBounds, energy: this.energy, yaw: this.yaw, lastDistance: this.lastDistance, settledTicks: this.settledTicks };
   }
   restore(snapshot: any): void {
     if (!snapshot || snapshot.version !== 'sim-v1') throw new Error('Unsupported simulation snapshot.');
     if (!sameConfig(snapshot.config, this.config)) throw new Error('Snapshot configuration does not match this environment.');
     this.world?.free(); this.world = RAPIER.World.restoreSnapshot(new Uint8Array(snapshot.rapier)); const bodies = this.world.bodies; let found: RAPIER.RigidBody | undefined;
     bodies.forEach(b => { if (b.isDynamic()) found ??= b; }); if (!found) throw new Error('Snapshot has no drone body.'); this.drone = found; this.initialized = true;
-    this.scenario = snapshot.scenario; this.rebuildContactMetadata(); this.rng.restore(snapshot.rng); this.motor = [...snapshot.motor]; this.prior = copyAction(snapshot.prior); this.queue = snapshot.queue.map(copyObservation); this.delivered = copyObservation(snapshot.delivered); this.activeContacts = new Set(snapshot.activeContacts); this.tick = snapshot.tick; this.decision = snapshot.decision; this.targetIndex = snapshot.targetIndex; this.collisions = snapshot.collisions; this.stopped = snapshot.stopped; this.terminated = snapshot.terminated; this.truncated = snapshot.truncated; this.reason = snapshot.reason; this.wasOutOfBounds = snapshot.wasOutOfBounds; this.energy = snapshot.energy; this.yaw = snapshot.yaw; this.lastDistance = snapshot.lastDistance; this.settledTicks = snapshot.settledTicks;
+    this.scenario = snapshot.scenario; this.rebuildContactMetadata(); this.rng.restore(snapshot.rng); this.motor = [...snapshot.motor]; this.prior = copyAction(snapshot.prior); this.queue = snapshot.queue.map(copyObservation); this.delivered = copyObservation(snapshot.delivered); this.activeContacts = new Set(snapshot.activeContacts); this.previousPosition = [...snapshot.previousPosition] as V3; this.tick = snapshot.tick; this.decision = snapshot.decision; this.targetIndex = snapshot.targetIndex; this.collisions = snapshot.collisions; this.stopped = snapshot.stopped; this.terminated = snapshot.terminated; this.truncated = snapshot.truncated; this.reason = snapshot.reason; this.wasOutOfBounds = snapshot.wasOutOfBounds; this.energy = snapshot.energy; this.yaw = snapshot.yaw; this.lastDistance = snapshot.lastDistance; this.settledTicks = snapshot.settledTicks;
   }
   stop(reason = 'stopped'): void { this.stopped = true; this.truncated = true; this.reason = reason; }
   dispose(): void { if (this.initialized) this.world.free(); this.initialized = false; }
