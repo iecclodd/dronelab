@@ -47,11 +47,22 @@ function scenarioFor(config: SimConfig, rng: Rng): Scenario {
   if (config.scenario === 'gates') return {
     id: 'gates', name: 'Gate course', description: 'Follow the safe, ordered gates.', spawn: [jitter(), jitter(), 1.5],
     targets: [[0, 5, 2], [2.5, 9, 2.4], [-1.5, 13, 1.8]], pad: [-1.5, 13, 0],
-    obstacles: [[0, 5, 2], [2.5, 9, 2.4], [-1.5, 13, 1.8]].map((p, i) => ({ id: `gate-${i}`, position: p as V3, size: [2.6, .22, 2.6] as V3, kind: 'gate' })),
+    // Gates are four real collision bars, never a solid invisible wall.
+    obstacles: [[0, 5, 2], [2.5, 9, 2.4], [-1.5, 13, 1.8]].flatMap((p, i) => gateFrame(`gate-${i}`, p as V3)),
   };
   if (config.scenario === 'landing') return { id: 'landing', name: 'Landing pad', description: 'Descend gently onto the pad.', spawn: [jitter(), -3 + jitter(), 2.2], targets: [[0, 0, .16]], pad: [0, 0, 0], obstacles: [] };
   if (config.scenario === 'free') return { id: 'free', name: 'Free flight', description: 'Fly freely inside the test range.', spawn: [jitter(), jitter(), 1.5], targets: [[0, 8, 2]], pad: [0, 0, 0], obstacles: [] };
   return { id: 'hover', name: 'Hover target', description: 'Reach and hold the illuminated target.', spawn: [jitter(), jitter(), 1.2], targets: [[0, 0, 2]], pad: [0, 0, 0], obstacles: [] };
+}
+
+function gateFrame(id: string, [x, y, z]: V3): Scenario['obstacles'] {
+  const depth = .16, thickness = .16, halfWidth = 1.35, halfHeight = 1.35;
+  return [
+    { id: `${id}-left`, position: [x - halfWidth, y, z], size: [thickness, depth, halfHeight * 2 + thickness] as V3, kind: 'gate' },
+    { id: `${id}-right`, position: [x + halfWidth, y, z], size: [thickness, depth, halfHeight * 2 + thickness] as V3, kind: 'gate' },
+    { id: `${id}-top`, position: [x, y, z + halfHeight], size: [halfWidth * 2, depth, thickness] as V3, kind: 'gate' },
+    { id: `${id}-bottom`, position: [x, y, z - halfHeight], size: [halfWidth * 2, depth, thickness] as V3, kind: 'gate' },
+  ];
 }
 
 export function makeScenario(config: SimConfig): Scenario { return scenarioFor({ ...DEFAULT_CONFIG, ...config }, new Rng(config.seed)); }
@@ -62,6 +73,7 @@ const MASS = 1;
 const MAX_THRUST = 5.8;
 const MOTOR_TAU = .045;
 const YAW_COEFF = .04;
+const ARENA_HALF_EXTENT = 25;
 
 function rotate(q: Quat, v: V3): V3 {
   const [x, y, z, w] = q; const uv = cross([x, y, z], v); const uuv = cross([x, y, z], uv);
@@ -85,24 +97,30 @@ function qErrorVector(current: Quat, wanted: Quat): V3 {
 }
 
 function copyAction(a: Action): Action { return a.kind === 'nav' ? { kind: 'nav', velocity: [...a.velocity] as V3, yawRate: a.yawRate } : { kind: 'rate', rates: [...a.rates] as V3, thrust: a.thrust }; }
+function sameConfig(a: SimConfig, b: SimConfig): boolean { return JSON.stringify(a) === JSON.stringify(b); }
 
 export class DroneEnvironment {
   readonly config: SimConfig;
   scenario: Scenario;
   private world!: RAPIER.World;
   private drone!: RAPIER.RigidBody;
+  private droneCollider!: RAPIER.Collider;
+  private padCollider?: RAPIER.Collider;
+  private contactTags = new Map<number, 'ground' | 'pad' | 'obstacle'>();
+  private activeContacts = new Set<number>();
   private rng: Rng;
   private motor = [0, 0, 0, 0];
   private prior: Action = copyAction(ZERO_ACTION);
   private queue: Observation[] = [];
+  private delivered!: Observation;
   private tick = 0; private decision = 0; private targetIndex = 0; private collisions = 0;
-  private stopped = false; private terminated = false; private truncated = false; private reason = '';
+  private stopped = false; private terminated = false; private truncated = false; private reason = ''; private wasOutOfBounds = false;
   private energy = 0; private yaw = 0; private lastDistance = 0; private settledTicks = 0;
   private initialized = false;
 
   constructor(config: SimConfig) {
     this.config = { ...DEFAULT_CONFIG, ...config, wind: [...(config.wind ?? DEFAULT_CONFIG.wind)] as V3 };
-    this.rng = new Rng(this.config.seed); this.scenario = scenarioFor(this.config, this.rng);
+    this.rng = new Rng(this.config.seed); this.scenario = scenarioFor(this.config, this.rng); this.reset();
   }
 
   private ensure(): void {
@@ -114,21 +132,38 @@ export class DroneEnvironment {
     this.world?.free();
     this.world = new RAPIER.World({ x: 0, y: 0, z: -9.81 });
     const ground = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, 0, -.15));
-    this.world.createCollider(RAPIER.ColliderDesc.cuboid(30, 30, .15).setFriction(.9), ground);
-    for (const obstacle of this.scenario.obstacles.filter(o => o.kind === 'box')) {
-      const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(...obstacle.position));
-      this.world.createCollider(RAPIER.ColliderDesc.cuboid(...obstacle.size.map(x => x / 2) as [number, number, number]), body);
+    const groundCollider = this.world.createCollider(RAPIER.ColliderDesc.cuboid(30, 30, .15).setFriction(.9), ground);
+    this.contactTags.set(groundCollider.handle, 'ground');
+    if (this.config.scenario === 'landing') {
+      const pad = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(...this.scenario.pad));
+      this.padCollider = this.world.createCollider(RAPIER.ColliderDesc.cuboid(.7, .7, .04).setTranslation(0, 0, .04).setFriction(.9), pad);
+      this.contactTags.set(this.padCollider.handle, 'pad');
     }
-    this.drone = this.world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(...this.scenario.spawn).setLinearDamping(.42).setAngularDamping(1.1));
-    this.drone.setAdditionalMass(MASS - .02, true);
-    this.world.createCollider(RAPIER.ColliderDesc.cuboid(.16, .16, .06).setDensity(.02).setRestitution(.05).setFriction(.45), this.drone);
+    for (const obstacle of this.scenario.obstacles) {
+      const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(...obstacle.position));
+      const collider = this.world.createCollider(RAPIER.ColliderDesc.cuboid(...obstacle.size.map(x => x / 2) as [number, number, number]), body);
+      this.contactTags.set(collider.handle, 'obstacle');
+    }
+    this.drone = this.world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(...this.scenario.spawn).setLinearDamping(.42).setAngularDamping(1.1).setAdditionalMassProperties(MASS, { x: 0, y: 0, z: 0 }, { x: .025, y: .025, z: .045 }, { x: 0, y: 0, z: 0, w: 1 }));
+    this.droneCollider = this.world.createCollider(RAPIER.ColliderDesc.cuboid(.16, .16, .06).setDensity(0).setRestitution(.05).setFriction(.45), this.drone);
+  }
+  private rebuildContactMetadata(): void {
+    this.contactTags.clear(); this.padCollider = undefined;
+    this.world.colliders.forEach(collider => {
+      const parent = collider.parent();
+      if (parent?.isDynamic()) { this.droneCollider = collider; return; }
+      const p = collider.translation();
+      if (Math.abs(p.z + .15) < .001) this.contactTags.set(collider.handle, 'ground');
+      else if (this.config.scenario === 'landing' && Math.hypot(p.x - this.scenario.pad[0], p.y - this.scenario.pad[1], p.z - .04) < .001) { this.padCollider = collider; this.contactTags.set(collider.handle, 'pad'); }
+      else this.contactTags.set(collider.handle, 'obstacle');
+    });
   }
   reset(seed = this.config.seed): Observation {
     this.rng = new Rng(seed); this.scenario = scenarioFor({ ...this.config, seed }, this.rng);
     this.tick = this.decision = this.targetIndex = this.collisions = this.energy = this.yaw = this.settledTicks = 0;
-    this.motor = [0, 0, 0, 0]; this.prior = copyAction(ZERO_ACTION); this.queue = []; this.stopped = this.terminated = this.truncated = false; this.reason = '';
-    this.lastDistance = length(sub(this.target(), this.scenario.spawn)); this.initialized = false; this.ensure();
-    const observation = this.sampleObservation(); this.queue.push(observation); return observation;
+    this.motor = [0, 0, 0, 0]; this.prior = copyAction(ZERO_ACTION); this.queue = []; this.activeContacts.clear(); this.contactTags.clear(); this.padCollider = undefined; this.stopped = this.terminated = this.truncated = this.wasOutOfBounds = false; this.reason = '';
+    this.initialized = false; this.ensure(); this.lastDistance = length(sub(this.target(), this.rawState().position));
+    this.delivered = this.sampleObservation(this.tick); return copyObservation(this.delivered);
   }
   private target(): V3 { return this.scenario.targets[Math.min(this.targetIndex, this.scenario.targets.length - 1)]!; }
   private rawState(): PhysicalState {
@@ -148,22 +183,24 @@ export class DroneEnvironment {
       return clamp(hit, 0, max) / max;
     });
   }
-  private sampleObservation(): Observation {
+  private sampleObservation(deliveryStep = this.tick + this.config.delaySteps): Observation {
     const s = this.rawState(); const n = this.config.noise;
     const noisy = (v: number, scale: number) => v + this.rng.signed() * n * scale;
     const relative = sub(s.target, s.position).map(v => noisy(v, .04)) as V3;
-    return { version: 'state-v1', sourceStep: s.step, deliveryStep: s.step + this.config.delaySteps, sampleTime: s.time, deliveryTime: (s.step + this.config.delaySteps) * this.config.dt, position: s.position.map(v => noisy(v, .02)) as V3, velocity: s.velocity.map(v => noisy(v, .025)) as V3, quaternion: [...s.quaternion], angularVelocity: s.angularVelocity.map(v => noisy(v, .02)) as V3, relativeTarget: relative, range: this.ranges(s.position).map(v => clamp(noisy(v, .01), 0, 1)), battery: s.battery, priorAction: copyAction(this.prior), elapsed: s.time };
+    return { version: 'state-v1', sourceStep: s.step, deliveryStep, sampleTime: s.time, deliveryTime: deliveryStep * this.config.dt, position: s.position.map(v => noisy(v, .02)) as V3, velocity: s.velocity.map(v => noisy(v, .025)) as V3, quaternion: [...s.quaternion], angularVelocity: s.angularVelocity.map(v => noisy(v, .02)) as V3, relativeTarget: relative, range: this.ranges(s.position).map(v => clamp(noisy(v, .01), 0, 1)), battery: s.battery, priorAction: copyAction(this.prior), elapsed: s.time };
   }
   observe(): Observation {
-    this.ensure(); const due = this.queue.filter(o => o.deliveryStep <= this.tick); return copyObservation(due.length ? due[due.length - 1]! : this.queue[0] ?? this.sampleObservation());
+    this.ensure(); while (this.queue.length && this.queue[0]!.deliveryStep <= this.tick) this.delivered = this.queue.shift()!; return copyObservation(this.delivered);
   }
   private controller(action: Action): number[] {
     const s = this.rawState(); const q = s.quaternion as Quat; const bodyZ = rotate(q, [0, 0, 1]); const rates = s.angularVelocity;
     let thrust = 0; let wantedRates: V3 = [0, 0, 0];
-    if (action.kind === 'rate') { thrust = clamp(action.thrust, 0, 1) * 4 * MAX_THRUST; wantedRates = action.rates.map(v => clamp(v, -1, 1) * 4) as V3; }
+    if (action.kind === 'rate') { thrust = action.thrust * 4 * MAX_THRUST; wantedRates = rotate(q, mul(action.rates, 4)); }
     else {
-      const desiredVelocity = clampV(action.velocity, NAV_LIMIT); const velError = sub(desiredVelocity, s.velocity);
-      const desiredAccel = clampV(add(mul(velError, 4.2), mul(sub(s.target, s.position), .16)), 6);
+      const velError = sub(action.velocity, s.velocity);
+      // Navigation is strictly velocity/yaw input. Mission position guidance is
+      // owned by scriptedAction (or a future planner), never this stabilizer.
+      const desiredAccel = clampV(mul(velError, 4.2), 6);
       const force = add([this.config.wind[0] * .14, this.config.wind[1] * .14, MASS * 9.81], mul(desiredAccel, MASS));
       const wantedZ = unit(force); const yaw = this.yaw; const heading: V3 = [Math.cos(yaw), Math.sin(yaw), 0];
       const wantedY = unit(cross(wantedZ, heading)); const wantedX = unit(cross(wantedY, wantedZ));
@@ -171,8 +208,7 @@ export class DroneEnvironment {
       wantedRates = clampV(add(mul(attitude, 1.7), [0, 0, clamp(action.yawRate, -YAW_LIMIT, YAW_LIMIT)]) as V3, 2.5);
       thrust = clamp(dot(force, bodyZ), 0, 4 * MAX_THRUST);
     }
-    // The chassis has a deliberately small inertia. Conservative rate gains
-    // keep motor saturation from turning an attitude correction into a flip.
+    // Gains match the explicit quadrotor inertia and avoid mixer saturation.
     const rateError = sub(wantedRates, rates); const torque = [rateError[0] * .004, rateError[1] * .004, rateError[2] * .0008] as V3;
     const a = ARMS[0]![0], c = YAW_COEFF;
     const f = [thrust / 4 + torque[0] / (4 * a) - torque[1] / (4 * a) + torque[2] / (4 * c), thrust / 4 - torque[0] / (4 * a) - torque[1] / (4 * a) - torque[2] / (4 * c), thrust / 4 - torque[0] / (4 * a) + torque[1] / (4 * a) + torque[2] / (4 * c), thrust / 4 + torque[0] / (4 * a) + torque[1] / (4 * a) - torque[2] / (4 * c)];
@@ -190,50 +226,71 @@ export class DroneEnvironment {
     let yawTorque = 0;
     ARMS.forEach((arm, i) => { const force = this.motor[i]! * MAX_THRUST; const point = add(s.position, rotate(q, arm)); const lift = mul(rotate(q, [0, 0, 1]), force); this.drone.addForceAtPoint({ x: lift[0], y: lift[1], z: lift[2] }, { x: point[0], y: point[1], z: point[2] }, true); yawTorque += SPIN[i]! * force * YAW_COEFF; });
     this.drone.addForce({ x: -s.velocity[0] * .16 + this.config.wind[0] * .10, y: -s.velocity[1] * .16 + this.config.wind[1] * .10, z: -s.velocity[2] * .10 }, true);
-    this.drone.addTorque({ x: -s.angularVelocity[0] * .015, y: -s.angularVelocity[1] * .015, z: yawTorque - s.angularVelocity[2] * .018 }, true);
-    this.world.timestep = dt; this.world.step(); this.tick++; this.yaw += (requested.kind === 'nav' ? requested.yawRate : requested.rates[2] * 1.5) * dt;
+    const reactionTorque = rotate(q, [0, 0, yawTorque]);
+    this.drone.addTorque({ x: reactionTorque[0] - s.angularVelocity[0] * .015, y: reactionTorque[1] - s.angularVelocity[1] * .015, z: reactionTorque[2] - s.angularVelocity[2] * .018 }, true);
+    this.world.timestep = dt; this.world.step(); this.tick++; if (requested.kind === 'nav') this.yaw += requested.yawRate * dt;
     this.energy += this.motor.reduce((sum, m) => sum + m * m, 0) * dt;
     const next = this.rawState(); const d = length(sub(next.target, next.position)); const progress = clamp((this.lastDistance - d) * .7, -1, 1); this.lastDistance = d;
-    let collision = 0; if (next.position[2] < .09) { this.collisions++; collision = -1; if (length(next.velocity) > 2.5) { this.terminated = true; this.reason = 'collision'; } }
+    const contacts = new Set<number>(); this.world.contactPairsWith(this.droneCollider, other => { contacts.add(other.handle); });
+    const entered = [...contacts].filter(handle => !this.activeContacts.has(handle)); this.activeContacts = contacts;
+    const tags = entered.map(handle => this.contactTags.get(handle)); const onPad = this.padCollider !== undefined && contacts.has(this.padCollider.handle);
+    let collision = 0;
+    if (tags.some(tag => tag === 'obstacle' || (tag === 'ground' && this.config.scenario !== 'landing'))) { this.collisions++; collision = -1; this.terminated = true; this.reason = 'collision'; }
+    const outOfBounds = Math.abs(next.position[0]) > ARENA_HALF_EXTENT || Math.abs(next.position[1]) > ARENA_HALF_EXTENT || next.position[2] > ARENA_HALF_EXTENT;
+    if (outOfBounds && !this.wasOutOfBounds) { this.collisions++; collision = -1; this.terminated = true; this.reason = 'out_of_bounds'; } this.wasOutOfBounds = outOfBounds;
     let success = 0;
-    const gate = this.config.scenario === 'gates'; const gentle = length(next.velocity) < (gate ? 1.4 : 1.1); const arrivalRadius = this.config.scenario === 'landing' ? .32 : gate ? 1.2 : .48;
+    const gate = this.config.scenario === 'gates'; const gentle = length(next.velocity) < (gate ? 1.4 : 1.1); const arrivalRadius = gate ? 1.2 : .48;
     if (this.config.scenario === 'free') { /* free flight is only time bounded */ }
-    else if (d < arrivalRadius && gentle) { this.settledTicks++; if (this.settledTicks >= 20) { if (this.targetIndex + 1 < this.scenario.targets.length) { this.targetIndex++; this.settledTicks = 0; this.lastDistance = length(sub(this.target(), next.position)); } else { this.terminated = true; this.reason = 'success'; success = 10; } } }
+    else if (gate && d < 1.0) {
+      if (this.targetIndex + 1 < this.scenario.targets.length) { this.targetIndex++; this.lastDistance = length(sub(this.target(), next.position)); }
+      else { this.terminated = true; this.reason = 'success'; success = 10; }
+    } else if (this.config.scenario === 'landing') {
+      const horizontal = Math.hypot(next.velocity[0], next.velocity[1]); const overPad = Math.hypot(next.position[0] - this.scenario.pad[0], next.position[1] - this.scenario.pad[1]) < .38;
+      if (onPad && overPad && horizontal < .45 && Math.abs(next.velocity[2]) < .35) this.settledTicks++; else this.settledTicks = 0;
+      if (this.settledTicks >= 12) { this.terminated = true; this.reason = 'success'; success = 10; }
+    } else if (d < arrivalRadius && gentle) { this.settledTicks++; if (this.settledTicks >= 20) { this.terminated = true; this.reason = 'success'; success = 10; } }
     else this.settledTicks = 0;
     if (this.tick * dt >= this.config.maxSeconds) { this.truncated = true; this.reason ||= 'timeout'; }
-    const tracking = -Math.min(d, 8) * .04, energy = -this.motor.reduce((x, m) => x + m * m, 0) * .003;
+    const tracking = -Math.min(d, 8) * .04 * dt, energy = -this.motor.reduce((x, m) => x + m * m, 0) * .003 * dt;
     const total = tracking + progress + energy + collision + success;
     this.prior = copyAction(requested); this.queue.push(this.sampleObservation()); if (this.queue.length > Math.max(32, this.config.delaySteps + 4)) this.queue.shift();
     return { tracking, progress, energy, collision, success, total };
   }
   step(action: Action, ticks = ACTION_REPEAT): StepResult {
-    this.ensure(); const requested = sanitize(action); const start = this.tick; const observation = this.observe(); const total: RewardComponents = { tracking: 0, progress: 0, energy: 0, collision: 0, success: 0, total: 0 };
-    const applied = copyAction(requested); let actual = 0;
-    if (!this.terminated && !this.truncated && !this.stopped) for (let i = 0; i < Math.max(1, Math.floor(ticks)); i++) { const c = this.tickOnce(requested); (Object.keys(total) as (keyof RewardComponents)[]).forEach(k => { total[k] += c[k]; }); actual++; if (this.terminated || this.truncated) break; }
+    this.ensure(); assertAction(action); const requested = copyAction(action); const applied = boundedAction(action); const start = this.tick; const observation = this.observe(); const total: RewardComponents = { tracking: 0, progress: 0, energy: 0, collision: 0, success: 0, total: 0 }; let actual = 0;
+    if (!this.terminated && !this.truncated && !this.stopped) for (let i = 0; i < Math.max(1, Math.floor(ticks)); i++) { const c = this.tickOnce(applied); (Object.keys(total) as (keyof RewardComponents)[]).forEach(k => { total[k] += c[k]; }); actual++; if (this.terminated || this.truncated) break; }
     const next = this.observe(); const state = this.rawState(); const transition: Transition = { observation, requestedAction: requested, appliedAction: applied, nextObservation: next, reward: total.total, components: total, state, startStep: start, endStep: this.tick, ticks: actual, decision: this.decision++, terminated: state.terminated, truncated: state.truncated, reason: state.reason, wallTime: 0, validThroughStep: this.tick };
     return { observation: next, state, transition };
   }
   scriptedAction(observation: Observation = this.observe()): Action {
     // This intentionally consumes the policy-visible observation, not ground truth.
-    const vel = clampV(add(mul(observation.relativeTarget, .7), mul(observation.velocity, -.9)), NAV_LIMIT);
+    // The velocity stabilizer already damps measured velocity.  This planner
+    // contributes only a position-derived velocity setpoint from policy input.
+    const vel = clampV(add(mul(observation.relativeTarget, .55), mul(observation.velocity, -.35)), NAV_LIMIT);
     return { kind: 'nav', velocity: vel, yawRate: 0 };
   }
   randomAction(): Action { return { kind: 'nav', velocity: [this.rng.signed() * NAV_LIMIT, this.rng.signed() * NAV_LIMIT, this.rng.signed() * NAV_LIMIT], yawRate: this.rng.signed() * YAW_LIMIT }; }
   snapshot(): any {
-    this.ensure(); return { version: 'sim-v1', config: this.config, scenario: this.scenario, rapier: Array.from(this.world.takeSnapshot()), rng: this.rng.snapshot(), motor: [...this.motor], prior: copyAction(this.prior), queue: this.queue.map(copyObservation), tick: this.tick, decision: this.decision, targetIndex: this.targetIndex, collisions: this.collisions, stopped: this.stopped, terminated: this.terminated, truncated: this.truncated, reason: this.reason, energy: this.energy, yaw: this.yaw, lastDistance: this.lastDistance, settledTicks: this.settledTicks };
+    this.ensure(); return { version: 'sim-v1', config: this.config, scenario: this.scenario, rapier: Array.from(this.world.takeSnapshot()), rng: this.rng.snapshot(), motor: [...this.motor], prior: copyAction(this.prior), queue: this.queue.map(copyObservation), delivered: copyObservation(this.delivered), activeContacts: [...this.activeContacts], tick: this.tick, decision: this.decision, targetIndex: this.targetIndex, collisions: this.collisions, stopped: this.stopped, terminated: this.terminated, truncated: this.truncated, reason: this.reason, wasOutOfBounds: this.wasOutOfBounds, energy: this.energy, yaw: this.yaw, lastDistance: this.lastDistance, settledTicks: this.settledTicks };
   }
   restore(snapshot: any): void {
     if (!snapshot || snapshot.version !== 'sim-v1') throw new Error('Unsupported simulation snapshot.');
+    if (!sameConfig(snapshot.config, this.config)) throw new Error('Snapshot configuration does not match this environment.');
     this.world?.free(); this.world = RAPIER.World.restoreSnapshot(new Uint8Array(snapshot.rapier)); const bodies = this.world.bodies; let found: RAPIER.RigidBody | undefined;
     bodies.forEach(b => { if (b.isDynamic()) found ??= b; }); if (!found) throw new Error('Snapshot has no drone body.'); this.drone = found; this.initialized = true;
-    this.scenario = snapshot.scenario; this.rng.restore(snapshot.rng); this.motor = [...snapshot.motor]; this.prior = copyAction(snapshot.prior); this.queue = snapshot.queue.map(copyObservation); this.tick = snapshot.tick; this.decision = snapshot.decision; this.targetIndex = snapshot.targetIndex; this.collisions = snapshot.collisions; this.stopped = snapshot.stopped; this.terminated = snapshot.terminated; this.truncated = snapshot.truncated; this.reason = snapshot.reason; this.energy = snapshot.energy; this.yaw = snapshot.yaw; this.lastDistance = snapshot.lastDistance; this.settledTicks = snapshot.settledTicks;
+    this.scenario = snapshot.scenario; this.rebuildContactMetadata(); this.rng.restore(snapshot.rng); this.motor = [...snapshot.motor]; this.prior = copyAction(snapshot.prior); this.queue = snapshot.queue.map(copyObservation); this.delivered = copyObservation(snapshot.delivered); this.activeContacts = new Set(snapshot.activeContacts); this.tick = snapshot.tick; this.decision = snapshot.decision; this.targetIndex = snapshot.targetIndex; this.collisions = snapshot.collisions; this.stopped = snapshot.stopped; this.terminated = snapshot.terminated; this.truncated = snapshot.truncated; this.reason = snapshot.reason; this.wasOutOfBounds = snapshot.wasOutOfBounds; this.energy = snapshot.energy; this.yaw = snapshot.yaw; this.lastDistance = snapshot.lastDistance; this.settledTicks = snapshot.settledTicks;
   }
-  stop(reason = 'stopped'): void { this.stopped = true; this.reason = reason; }
+  stop(reason = 'stopped'): void { this.stopped = true; this.truncated = true; this.reason = reason; }
   dispose(): void { if (this.initialized) this.world.free(); this.initialized = false; }
 }
 
-function sanitize(a: Action): Action {
-  if (a.kind === 'rate') return { kind: 'rate', rates: a.rates.map(v => clamp(Number.isFinite(v) ? v : 0, -1, 1)) as V3, thrust: clamp(Number.isFinite(a.thrust) ? a.thrust : 0, 0, 1) };
-  return { kind: 'nav', velocity: a.velocity.map(v => clamp(Number.isFinite(v) ? v : 0, -NAV_LIMIT, NAV_LIMIT)) as V3, yawRate: clamp(Number.isFinite(a.yawRate) ? a.yawRate : 0, -YAW_LIMIT, YAW_LIMIT) };
+function assertAction(a: Action): void {
+  const vector = a && (a as Action).kind === 'nav' ? (a as Action & { velocity: unknown }).velocity : a && (a as Action).kind === 'rate' ? (a as Action & { rates: unknown }).rates : undefined;
+  if (!a || (a.kind !== 'nav' && a.kind !== 'rate') || !Array.isArray(vector) || vector.length !== 3 || !vector.every(Number.isFinite)) throw new Error('Action must contain three finite values.');
+  const scalar = a.kind === 'nav' ? a.yawRate : a.thrust; if (!Number.isFinite(scalar)) throw new Error('Action scalar must be finite.');
+}
+function boundedAction(a: Action): Action {
+  if (a.kind === 'rate') return { kind: 'rate', rates: a.rates.map(v => clamp(v, -1, 1)) as V3, thrust: clamp(a.thrust, 0, 1) };
+  return { kind: 'nav', velocity: a.velocity.map(v => clamp(v, -NAV_LIMIT, NAV_LIMIT)) as V3, yawRate: clamp(a.yawRate, -YAW_LIMIT, YAW_LIMIT) };
 }
 function copyObservation(o: Observation): Observation { return { ...o, position: [...o.position] as V3, velocity: [...o.velocity] as V3, quaternion: [...o.quaternion] as Quat, angularVelocity: [...o.angularVelocity] as V3, relativeTarget: [...o.relativeTarget] as V3, range: [...o.range], priorAction: copyAction(o.priorAction) }; }
