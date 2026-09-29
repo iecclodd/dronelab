@@ -30,3 +30,19 @@ export const YAW_LIMIT=1.5;
 export function actionVector(a:Action):number[]{return a.kind==='nav'?[...a.velocity.map(v=>v/NAV_LIMIT),a.yawRate/YAW_LIMIT]:[0,0,0,0];}
 export function vectorAction(v:number[]):Action{return {kind:'nav',velocity:[0,1,2].map(i=>Math.max(-1,Math.min(1,v[i]??0))*NAV_LIMIT) as V3,yawRate:Math.max(-1,Math.min(1,v[3]??0))*YAW_LIMIT};}
 export function hashValue(v:unknown):string{const s=JSON.stringify(v);let h=2166136261;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return (h>>>0).toString(16).padStart(8,'0');}
+export function validateConfig(value:unknown):SimConfig{
+ const c=value as SimConfig;
+ if(!c||!['hover','gates','landing','free'].includes(c.scenario)||!Number.isInteger(c.seed)||c.seed<0||c.seed>0xffffffff)throw new Error('Invalid scenario or seed');
+ if(!Array.isArray(c.wind)||c.wind.length!==3||c.wind.some(v=>!Number.isFinite(v)||Math.abs(v)>10))throw new Error('Wind must be three finite values within ±10 m/s');
+ if(!Number.isFinite(c.noise)||c.noise<0||c.noise>2||!Number.isInteger(c.delaySteps)||c.delaySteps<0||c.delaySteps>120)throw new Error('Invalid sensor settings');
+ if(!Number.isFinite(c.dt)||c.dt<1/240||c.dt>1/60||!Number.isFinite(c.maxSeconds)||c.maxSeconds<.001||c.maxSeconds>120)throw new Error('Invalid time budget');
+ return structuredClone(c);
+}
+export function validateAction(value:unknown):Action{
+ const a=value as Action;
+ if(!a||!['nav','rate'].includes(a.kind))throw new Error('Invalid action contract');
+ const values=a.kind==='nav'?a.velocity:a.rates;
+ if(!Array.isArray(values)||values.length!==3||values.some(v=>!Number.isFinite(v)))throw new Error('Action vector must contain three finite values');
+ if(!Number.isFinite(a.kind==='nav'?a.yawRate:a.thrust))throw new Error('Invalid action scalar');
+ return structuredClone(a);
+}
