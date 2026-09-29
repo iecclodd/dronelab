@@ -12,3 +12,4 @@ playwright-report/
 work/
 **/node_modules/
 **/dist/
+.vercel/

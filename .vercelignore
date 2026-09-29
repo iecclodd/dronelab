@@ -1,0 +1,9 @@
+.git/
+.openai/
+work/
+test-results/
+playwright-report/
+**/node_modules/
+**/.env
+**/.env.*
+!**/.env.example
