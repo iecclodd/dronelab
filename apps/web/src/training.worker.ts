@@ -102,7 +102,8 @@ async function train(jobId: number, data: TrainData): Promise<void> {
       mean, std, layers, loss: losses, validationLoss: validationLosses, samples: cappedTrain.length, epochs: losses.length, parityMaxError: 0 };
     const probes = cappedValidation.slice(0, Math.min(32, cappedValidation.length)).map(transition => transition.observation);
     const expected = tf.tidy(() => Array.from((model.predict(tf.tensor2d(probes.map(probe => normalizedFeatures(probe, mean, std)), [probes.length, 20])) as tf.Tensor).dataSync()));
-    const actual = probes.flatMap(probe => actionVector(predict({ ...base, hash: '' }, probe)));
+    const parityCheckpoint = { ...base, hash: checkpointHash(base) };
+    const actual = probes.flatMap(probe => actionVector(predict(parityCheckpoint, probe)));
     const parityMaxError = Math.max(...expected.map((value, i) => Math.abs(value - actual[i])));
     if (parityMaxError >= 1e-5) throw new Error(`Pure predictor parity failed: ${parityMaxError}`);
     const complete = { ...base, parityMaxError };
@@ -113,3 +114,4 @@ async function train(jobId: number, data: TrainData): Promise<void> {
     bestWeights?.forEach(w => w.dispose()); optimizer.dispose(); model.dispose(); trainSet.x.dispose(); trainSet.y.dispose(); validationSet.x.dispose(); validationSet.y.dispose();
   }
 }
+
