@@ -1,6 +1,7 @@
 import type { PolicyCheckpoint, SimConfig, Transition } from '../../../packages/contracts/index.ts';
 
 export type TrainingProgress = { epoch: number; loss: number; validationLoss: number };
+export type TrainingOptions = { trainingSeed?: number; epochs?: number };
 type Request = { type: 'train'; jobId: number; data: { episodes: { seed: number; transitions: Transition[] }[]; config: SimConfig; trainingSeed: number; epochs: number } } | { type: 'cancel'; jobId: number };
 type Response = { type: 'progress'; jobId: number; epoch: number; loss: number; validationLoss: number } | { type: 'complete'; jobId: number; checkpoint: PolicyCheckpoint } | { type: 'cancelled'; jobId: number } | { type: 'error'; jobId: number; error: string };
 
@@ -13,12 +14,12 @@ export class TrainingClient {
     this.worker.onmessage = ({ data }: MessageEvent<Response>) => this.handle(data);
     this.worker.onerror = event => this.fail(new Error(event.message || 'Training worker failed'));
   }
-  start(episodes: { seed: number; transitions: Transition[] }[], config: SimConfig, onProgress: (progress: TrainingProgress) => void): Promise<PolicyCheckpoint> {
+  start(episodes: { seed: number; transitions: Transition[] }[], config: SimConfig, onProgress: (progress: TrainingProgress) => void, options: TrainingOptions = {}): Promise<PolicyCheckpoint> {
     if (this.current) throw new Error('A training job is already running');
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.current = { id, resolve, reject, onProgress };
-      const request: Request = { type: 'train', jobId: id, data: { episodes, config, trainingSeed: id, epochs: 24 } };
+      const request: Request = { type: 'train', jobId: id, data: { episodes, config, trainingSeed: options.trainingSeed ?? 41001, epochs: options.epochs ?? 24 } };
       this.worker.postMessage(request);
     });
   }

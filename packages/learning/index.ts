@@ -1,5 +1,8 @@
 import { FEATURE_COUNT, NAV_LIMIT, YAW_LIMIT, hashValue, type Action, type Observation, type PolicyCheckpoint } from '../contracts/index.ts';
 
+const validated = new WeakSet<object>();
+const expectedShapes = [[20, 32], [32], [32, 32], [32], [32, 4], [4]];
+
 /** Preprocessing is deliberately shared with the worker and has no TFJS dependency. */
 export function normalizedFeatures(observation: Observation, mean: number[], std: number[]): number[] {
   const raw = [...observation.relativeTarget, ...observation.velocity, ...observation.quaternion,
@@ -12,7 +15,7 @@ export function normalizedFeatures(observation: Observation, mean: number[], std
 
 /** CPU-only forward pass for the exported Dense(20,32)-Dense(32,32)-Dense(32,4) policy. */
 export function predict(checkpoint: PolicyCheckpoint, observation: Observation): Action {
-  if (checkpoint.version !== 'bc-v1' || checkpoint.layers.length !== 6) throw new Error('Unsupported policy checkpoint');
+  validateCheckpoint(checkpoint);
   let values = normalizedFeatures(observation, checkpoint.mean, checkpoint.std);
   for (let layer = 0; layer < 3; layer++) {
     const kernel = checkpoint.layers[layer * 2];
@@ -38,4 +41,24 @@ export function wilson(success: number, total: number, z = 1.96): { low: number;
   return { low: Math.max(0, center - spread), high: Math.min(1, center + spread) };
 }
 
-export function checkpointHash(checkpoint: Omit<PolicyCheckpoint, 'hash'>): string { return hashValue(checkpoint); }
+/** Hashes reproducible policy content. UI-specific id and creation time are intentionally excluded. */
+export function checkpointHash(checkpoint: Omit<PolicyCheckpoint, 'hash'>): string {
+  const { id: _id, createdAt: _createdAt, hash: _hash, ...content } = checkpoint as Omit<PolicyCheckpoint, 'hash'> & { hash?: string };
+  return hashValue(content);
+}
+
+/** Validates persisted artifacts once per object before they are used for inference. */
+export function validateCheckpoint(checkpoint: PolicyCheckpoint): void {
+  if (validated.has(checkpoint)) return;
+  if (checkpoint.version !== 'bc-v1' || checkpoint.layers.length !== expectedShapes.length) throw new Error('Unsupported policy checkpoint');
+  if (checkpoint.mean.length !== FEATURE_COUNT || checkpoint.std.length !== FEATURE_COUNT) throw new Error('Invalid policy normalization');
+  const numeric = [...checkpoint.mean, ...checkpoint.std, ...checkpoint.loss, ...checkpoint.validationLoss];
+  for (let i = 0; i < checkpoint.layers.length; i++) {
+    const layer = checkpoint.layers[i], shape = expectedShapes[i];
+    if (layer.shape.length !== shape.length || layer.shape.some((value, index) => value !== shape[index]) || layer.data.length !== shape.reduce((a, b) => a * b, 1)) throw new Error('Invalid policy weight shape');
+    numeric.push(...layer.data);
+  }
+  if (!numeric.every(Number.isFinite) || !Number.isFinite(checkpoint.parityMaxError) || checkpoint.samples < 1 || checkpoint.epochs < 1) throw new Error('Policy contains invalid numeric values');
+  if (checkpoint.hash !== checkpointHash(checkpoint)) throw new Error('Policy checkpoint hash mismatch');
+  validated.add(checkpoint);
+}
