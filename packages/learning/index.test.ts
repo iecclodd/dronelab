@@ -11,7 +11,7 @@ const checkpoint: PolicyCheckpoint = { version: 'bc-v1', id: 'test', createdAt: 
   layers: [zeros([20,32]), zeros([32]), zeros([32,32]), zeros([32]), zeros([32,4]), { shape: [4], data: [0.1, -0.2, 0.3, -0.4] }], loss: [], validationLoss: [], samples: 1, epochs: 1, parityMaxError: 0, hash: '' };
 
 describe('learning runtime', () => {
-  it('uses the contract feature ordering and normalization', () => expect(normalizedFeatures(observation, Array(20).fill(0), Array(20).fill(1))).toEqual([7,8,9,1,2,3,0,0,0,1,4,5,6,10,11,12,13,14,15,0.5]));
+  it('uses contract ordering, std floor, and clipped normalization', () => expect(normalizedFeatures(observation, Array(20).fill(0), Array(20).fill(0))).toEqual([5,5,5,5,5,5,0,0,0,5,5,5,5,5,5,5,5,5,5,5]));
   it('runs flattened tanh weights without TensorFlow', () => {
     const action = predict(checkpoint, observation);
     expect(action.kind).toBe('nav');

@@ -7,7 +7,7 @@ export function normalizedFeatures(observation: Observation, mean: number[], std
   if (raw.length !== FEATURE_COUNT || mean.length !== FEATURE_COUNT || std.length !== FEATURE_COUNT) {
     throw new Error(`Expected ${FEATURE_COUNT} state features and normalization values`);
   }
-  return raw.map((value, i) => (value - mean[i]) / Math.max(std[i], 1e-8));
+  return raw.map((value, i) => Math.max(-5, Math.min(5, (value - mean[i]) / Math.max(std[i], 1e-3))));
 }
 
 /** CPU-only forward pass for the exported Dense(20,32)-Dense(32,32)-Dense(32,4) policy. */

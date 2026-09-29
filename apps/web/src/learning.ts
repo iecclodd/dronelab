@@ -11,6 +11,7 @@ export class TrainingClient {
   constructor() {
     this.worker = new Worker(new URL('./training.worker.ts', import.meta.url), { type: 'module' });
     this.worker.onmessage = ({ data }: MessageEvent<Response>) => this.handle(data);
+    this.worker.onerror = event => this.fail(new Error(event.message || 'Training worker failed'));
   }
   start(episodes: { seed: number; transitions: Transition[] }[], config: SimConfig, onProgress: (progress: TrainingProgress) => void): Promise<PolicyCheckpoint> {
     if (this.current) throw new Error('A training job is already running');
@@ -22,7 +23,7 @@ export class TrainingClient {
     });
   }
   cancel(): void { if (this.current) this.worker.postMessage({ type: 'cancel', jobId: this.current.id } satisfies Request); }
-  dispose(): void { this.cancel(); this.current = undefined; this.worker.terminate(); }
+  dispose(): void { this.cancel(); this.fail(new Error('Training client disposed')); this.worker.terminate(); }
   private handle(message: Response): void {
     const job = this.current;
     if (!job || message.jobId !== job.id) return; // stale worker messages cannot settle a later job
@@ -30,4 +31,5 @@ export class TrainingClient {
     else if (message.type === 'complete') { this.current = undefined; job.resolve(message.checkpoint); }
     else { this.current = undefined; job.reject(new Error(message.type === 'error' ? message.error : 'Training cancelled')); }
   }
+  private fail(error: Error): void { const job = this.current; if (job) { this.current = undefined; job.reject(error); } }
 }
