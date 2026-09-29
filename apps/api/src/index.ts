@@ -21,13 +21,21 @@ export interface RelayApp { app: express.Express; relay: BrowserRelay; server: h
 export function createRelayApp(config: RelayConfig = configFromEnv()): RelayApp {
   const relay = new BrowserRelay(config);
   const providerCalls = new Map<string, number>();
+  const reapProviderCalls = () => {
+    for (const key of providerCalls.keys()) {
+      const separator = key.lastIndexOf(":");
+      if (separator < 1 || !relay.isActive(key.slice(0, separator))) providerCalls.delete(key);
+    }
+  };
+  const providerReaper = setInterval(reapProviderCalls, Math.max(1_000, Math.min(config.sessionTtlMs, 30_000)));
+  providerReaper.unref();
   let activeProviderCalls = 0;
   const app = express();
   app.disable("x-powered-by");
   app.use(express.json({ limit: "160kb", type: "application/json" }));
   app.use((req, res, next) => {
     const origin = req.header("origin");
-    if (origin && config.allowedOrigins.has(origin)) { res.setHeader("access-control-allow-origin", origin); res.setHeader("vary", "Origin"); res.setHeader("access-control-allow-headers", "authorization, content-type, x-dronelab-pair-token"); res.setHeader("access-control-allow-methods", "GET,POST,DELETE,OPTIONS"); }
+    if (origin && config.allowedOrigins.has(origin)) { res.setHeader("access-control-allow-origin", origin); res.setHeader("vary", "Origin"); res.setHeader("access-control-allow-headers", "authorization, content-type, x-dronelab-pair-token, x-dronelab-session-id"); res.setHeader("access-control-allow-methods", "GET,POST,DELETE,OPTIONS"); }
     if (req.method === "OPTIONS") return res.sendStatus(origin && config.allowedOrigins.has(origin) ? 204 : 403);
     next();
   });
@@ -44,6 +52,7 @@ export function createRelayApp(config: RelayConfig = configFromEnv()): RelayApp 
     const browserToken = pairToken(req);
     if (!sessionId || !browserToken) throw new RelayError("missing_pairing", "provider requests require X-DroneLab-Session-Id and X-DroneLab-Pair-Token", 401);
     relay.assertBrowser(sessionId, browserToken);
+    reapProviderCalls();
     const budgetKey = `${sessionId}:${provider}`;
     const calls = providerCalls.get(budgetKey) ?? 0;
     if (calls >= 20) throw new RelayError("provider_budget_exhausted", "per-session provider call budget is exhausted", 429);
@@ -63,7 +72,7 @@ export function createRelayApp(config: RelayConfig = configFromEnv()): RelayApp 
     if (!res.headersSent) res.status(known.status).json({ error: { code: known.code, message: known.message } });
   });
   const server = http.createServer(app);
-  return { app, relay, server, close: () => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())) };
+  return { app, relay, server, close: () => new Promise((resolve, reject) => { clearInterval(providerReaper); server.close((error) => error ? reject(error) : resolve()); }) };
 }
 
 const isMain = process.argv[1] && new URL(import.meta.url).pathname === new URL(`file:${process.argv[1].replaceAll("\\", "/")}`).pathname;

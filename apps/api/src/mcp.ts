@@ -44,9 +44,18 @@ function makeServer(relay: BrowserRelay, sessionId: string, mcpToken: string): S
 export function mcpHandler(relay: BrowserRelay) {
   const connections = new Map<string, McpConnection>();
   const connectionsByRelaySession = new Map<string, string>();
+  const reservedRelaySessions = new Set<string>();
+  const reservationTimers = new Map<string, NodeJS.Timeout>();
+  const clearReservation = (sessionId: string) => {
+    reservedRelaySessions.delete(sessionId);
+    const timer = reservationTimers.get(sessionId);
+    if (timer) clearTimeout(timer);
+    reservationTimers.delete(sessionId);
+  };
   const remove = (id: string, connection: McpConnection) => {
     connections.delete(id);
     if (connectionsByRelaySession.get(connection.relaySessionId) === id) connectionsByRelaySession.delete(connection.relaySessionId);
+    clearReservation(connection.relaySessionId);
   };
   const reap = () => {
     const now = Date.now();
@@ -57,6 +66,7 @@ export function mcpHandler(relay: BrowserRelay) {
   const reaper = setInterval(reap, Math.max(1_000, Math.min(relay.config.sessionTtlMs, 30_000)));
   reaper.unref();
   return async (req: Request, res: Response): Promise<void> => {
+    let reservation: string | undefined;
     try {
       reap();
       relay.assertSecret(bearer(req.header("authorization") ?? undefined));
@@ -69,16 +79,20 @@ export function mcpHandler(relay: BrowserRelay) {
       if (connection && connection.relaySessionId !== sessionId) throw new RelayError("invalid_mcp_session", "MCP transport is bound to another browser session", 403);
       if (!connection) {
         if (req.method !== "POST" || (req.body as JsonObject | undefined)?.method !== "initialize") throw new RelayError("invalid_mcp_session", "initialize a new MCP session before making requests", 400);
-        if (connectionsByRelaySession.has(sessionId)) throw new RelayError("mcp_connection_exists", "this browser session already has an active MCP client connection", 409);
+        if (connectionsByRelaySession.has(sessionId) || reservedRelaySessions.has(sessionId)) throw new RelayError("mcp_connection_exists", "this browser session already has an active MCP client connection", 409);
+        reservedRelaySessions.add(sessionId); reservation = sessionId;
+        const reservationTimer = setTimeout(() => clearReservation(sessionId), 30_000); reservationTimer.unref(); reservationTimers.set(sessionId, reservationTimer);
         const expiresAtMs = Date.parse(relay.assertMcp(sessionId, mcpToken).expiresAt);
-        const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), onsessioninitialized: (id) => { connections.set(id, connection!); connectionsByRelaySession.set(sessionId, id); } });
+        const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID(), onsessioninitialized: (id) => { connections.set(id, connection!); connectionsByRelaySession.set(sessionId, id); clearReservation(sessionId); } });
         const server = makeServer(relay, sessionId, mcpToken);
         connection = { transport, server, relaySessionId: sessionId, expiresAtMs };
         transport.onclose = () => { if (transport.sessionId) remove(transport.sessionId, connection!); };
         await server.connect(transport);
       }
       await connection.transport.handleRequest(req, res, req.body);
+      if (reservation && !connectionsByRelaySession.has(reservation)) clearReservation(reservation);
     } catch (error) {
+      if (reservation && !connectionsByRelaySession.has(reservation)) clearReservation(reservation);
       const known = error instanceof RelayError ? error : new RelayError("mcp_error", "MCP request failed", 500);
       if (!res.headersSent) res.status(known.status).json({ error: { code: known.code, message: known.message } });
     }

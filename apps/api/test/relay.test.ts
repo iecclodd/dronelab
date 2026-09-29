@@ -1,6 +1,8 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { once } from "node:events";
+import { describe, expect, it } from "vitest";
 import { BrowserRelay, RelayError, type RelayConfig } from "../src/relay.js";
 import { anthropicAdapter, geminiAdapter, openAIAdapter } from "../src/providers.js";
+import { createRelayApp } from "../src/index.js";
 
 const config: RelayConfig = { secret: "s".repeat(32), allowedOrigins: new Set(["https://app.example.test"]), sessionTtlMs: 5_000, commandTtlMs: 50, pollTimeoutMs: 20, maxQueue: 2, maxResultBytes: 1024, maxSessions: 2 };
 const relay = () => new BrowserRelay(config);
@@ -43,6 +45,42 @@ describe("BrowserRelay", () => {
   it("expires a command if the browser does not answer", async () => {
     const subject = relay(); const session = subject.createSession();
     await expect(subject.issue(session.sessionId, session.mcpToken, "list_policies", {})).rejects.toMatchObject({ code: "browser_timeout" });
+    await expect(subject.issue(session.sessionId, session.mcpToken, "list_policies", {}, "failed-request")).rejects.toMatchObject({ code: "browser_timeout" });
+    await expect(subject.issue(session.sessionId, session.mcpToken, "list_policies", {}, "failed-request")).rejects.toMatchObject({ code: "browser_timeout" });
+  });
+  it("bounds completed request-id records while preserving recent idempotency", async () => {
+    const subject = relay(); const session = subject.createSession();
+    for (let index = 0; index < 260; index += 1) {
+      const pending = subject.issue(session.sessionId, session.mcpToken, "get_capabilities", {}, `request-${index}`);
+      const [command] = (await subject.poll(session.sessionId, session.browserToken)).commands;
+      subject.submitResult(session.sessionId, session.browserToken, { commandId: command.id, requestId: command.requestId, generation: command.generation, authorityEpoch: command.authorityEpoch, ok: true, result: { index } });
+      await expect(pending).resolves.toEqual({ index });
+    }
+    const internals = subject as unknown as { sessions: Map<string, { byRequestId: Map<string, unknown> }> };
+    expect(internals.sessions.get(session.sessionId)?.byRequestId.size).toBeLessThanOrEqual(256);
+  });
+});
+
+describe("HTTP relay safeguards", () => {
+  it("reserves the browser session during concurrent MCP initialize and permits provider preflight headers", async () => {
+    const secret = "t".repeat(32);
+    const relayApp = createRelayApp({ ...config, secret });
+    relayApp.server.listen(0, "127.0.0.1"); await once(relayApp.server, "listening");
+    const address = relayApp.server.address(); if (!address || typeof address === "string") throw new Error("bind failed");
+    const root = `http://127.0.0.1:${address.port}`;
+    const headers = { authorization: `Bearer ${secret}`, origin: "https://app.example.test", "content-type": "application/json" };
+    try {
+      const created = await fetch(`${root}/sessions`, { method: "POST", headers, body: JSON.stringify({ generation: 1, authorityEpoch: 0 }) });
+      const session = await created.json() as { sessionId: string; mcpToken: string };
+      const initialize = () => fetch(`${root}/mcp?sessionId=${encodeURIComponent(session.sessionId)}`, { method: "POST", headers: { ...headers, "x-dronelab-pair-token": session.mcpToken, accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "test", version: "1" } } }) });
+      const responses = await Promise.all([initialize(), initialize()]);
+      const statuses = responses.map((response) => response.status);
+      expect(statuses).toContain(409);
+      expect(statuses.some((status) => status >= 200 && status < 300)).toBe(true);
+      const preflight = await fetch(`${root}/providers/openai/plan`, { method: "OPTIONS", headers: { origin: "https://app.example.test", "access-control-request-method": "POST", "access-control-request-headers": "x-dronelab-session-id, x-dronelab-pair-token, authorization, content-type" } });
+      expect(preflight.status).toBe(204);
+      expect(preflight.headers.get("access-control-allow-headers")).toContain("x-dronelab-session-id");
+    } finally { await relayApp.close(); }
   });
 });
 

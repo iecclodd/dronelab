@@ -54,6 +54,8 @@ interface PendingCommand extends RelayCommand {
   reject: (reason: Error) => void;
   state: "queued" | "delivered" | "done";
   result?: unknown;
+  failure?: RelayError;
+  dedupeExpiresAtMs?: number;
 }
 interface SessionState extends BrowserSession {
   expiresAtMs: number;
@@ -91,6 +93,7 @@ const fingerprint = (value: string) => createHash("sha256").update(value).digest
 
 export class BrowserRelay {
   private readonly sessions = new Map<string, SessionState>();
+  private static readonly maxRecentRequests = 256;
   constructor(readonly config: RelayConfig) {}
 
   constantTimeEquals(left: string | undefined, right: string): boolean {
@@ -140,6 +143,20 @@ export class BrowserRelay {
     session.heartbeatExpiresAtMs = Math.min(session.expiresAtMs, Date.now() + Math.min(15_000, this.config.sessionTtlMs));
     return new Date(session.heartbeatExpiresAtMs).toISOString();
   }
+  private pruneRequestIds(session: SessionState, now = Date.now()): void {
+    for (const [requestId, command] of session.byRequestId) {
+      if (command.state === "done" && (command.dedupeExpiresAtMs ?? 0) <= now) session.byRequestId.delete(requestId);
+    }
+    while (session.byRequestId.size > BrowserRelay.maxRecentRequests) {
+      const oldestDone = [...session.byRequestId].find(([, command]) => command.state === "done");
+      if (!oldestDone) break;
+      session.byRequestId.delete(oldestDone[0]);
+    }
+  }
+  private rememberCompletion(session: SessionState, command: PendingCommand): void {
+    command.dedupeExpiresAtMs = Math.min(session.expiresAtMs, Date.now() + 60_000);
+    this.pruneRequestIds(session);
+  }
   async poll(id: string, browserToken: string | undefined): Promise<PollResult> {
     const session = this.assertBrowser(id, browserToken);
     this.touchBrowser(session);
@@ -171,20 +188,27 @@ export class BrowserRelay {
     command.state = "done"; command.result = body; clearTimeout(command.timer); session.commands.delete(command.id);
     if (input.authority) {
       session.generation = input.authority.generation; session.authorityEpoch = input.authority.epoch;
-      for (const pending of session.commands.values()) if (pending.state !== "done") { pending.state = "done"; clearTimeout(pending.timer); pending.reject(new RelayError("stale_generation", "session state was superseded", 409)); }
+      for (const pending of session.commands.values()) if (pending.state !== "done") { pending.state = "done"; clearTimeout(pending.timer); pending.failure = new RelayError("stale_generation", "session state was superseded", 409); this.rememberCompletion(session, pending); pending.reject(pending.failure); }
       session.commands.clear();
     }
-    input.ok ? command.resolve(body) : command.reject(new RelayError("browser_command_failed", String((body as JsonObject).message), 502));
+    if (!input.ok) command.failure = new RelayError("browser_command_failed", String((body as JsonObject).message), 502);
+    this.rememberCompletion(session, command);
+    if (input.ok) command.resolve(body);
+    else command.reject(command.failure!);
   }
   async issue(id: string, mcpToken: string | undefined, name: CanonicalTool, args: JsonObject, requestId?: string, expectedGeneration?: number, expectedEpoch?: number): Promise<unknown> {
     const session = this.assertMcp(id, mcpToken);
     if (expectedGeneration !== undefined && expectedGeneration !== session.generation) throw new RelayError("stale_generation", "caller has an obsolete session generation", 409);
     if (expectedEpoch !== undefined && expectedEpoch !== session.authorityEpoch) throw new RelayError("stale_epoch", "caller has an obsolete authority epoch", 409);
     const dedupeId = requestId || randomUUID();
+    this.pruneRequestIds(session);
     const old = session.byRequestId.get(dedupeId);
     if (old) {
       if (old.name !== name || JSON.stringify(old.args) !== JSON.stringify(args)) throw new RelayError("idempotency_conflict", "requestId was reused with a different command", 409);
-      if (old.state === "done") return old.result;
+      if (old.state === "done") {
+        if (old.failure) throw old.failure;
+        return old.result;
+      }
       return new Promise((resolve, reject) => { const originalResolve = old.resolve; const originalReject = old.reject; old.resolve = (value) => { originalResolve(value); resolve(value); }; old.reject = (error) => { originalReject(error); reject(error); }; });
     }
     if (session.commands.size >= this.config.maxQueue) throw new RelayError("queue_full", "browser command queue is full", 429);
@@ -196,14 +220,14 @@ export class BrowserRelay {
         expiresAt: new Date(expiresAtMs).toISOString(), state: "queued" as const, resolve, reject,
         timer: undefined as unknown as NodeJS.Timeout,
       };
-      command.timer = setTimeout(() => { if (command.state !== "done") { command.state = "done"; session.commands.delete(command.id); reject(new RelayError("browser_timeout", "paired browser did not return a result before the deadline", 504)); } }, Math.max(1, expiresAtMs - Date.now()));
-      session.commands.set(command.id, command); session.byRequestId.set(dedupeId, command);
+      command.timer = setTimeout(() => { if (command.state !== "done") { command.state = "done"; session.commands.delete(command.id); command.failure = new RelayError("browser_timeout", "paired browser did not return a result before the deadline", 504); this.rememberCompletion(session, command); reject(command.failure); } }, Math.max(1, expiresAtMs - Date.now()));
+      session.commands.set(command.id, command); session.byRequestId.set(dedupeId, command); this.pruneRequestIds(session);
       for (const wake of session.waiters) wake();
     });
   }
   private advance(session: SessionState, reason: string): void {
     for (const command of session.commands.values()) {
-      if (command.state !== "done") { command.state = "done"; clearTimeout(command.timer); command.reject(new RelayError("stale_generation", reason, 409)); }
+      if (command.state !== "done") { command.state = "done"; clearTimeout(command.timer); command.failure = new RelayError("stale_generation", reason, 409); command.reject(command.failure); }
     }
     session.commands.clear(); session.byRequestId.clear();
   }
