@@ -6,10 +6,12 @@ DroneLab flight, experiments, recording, replay, and browser training do not use
 
 ```powershell
 cd apps/api
+npm ci
 Copy-Item .env.example .env
-npm install
+# Set DRONELAB_RELAY_SECRET and exact DRONELAB_ALLOWED_ORIGINS in .env.
 npm run build
-npm start
+npx tsx test/browser-smoke.ts
+node --env-file=.env dist/index.js
 ```
 
 Set a high-entropy `DRONELAB_RELAY_SECRET` and exact HTTPS `DRONELAB_ALLOWED_ORIGINS` before starting. Run it on a persistent Node service behind TLS (for example a container, VM, or stateful service). Do not put this relay behind a short-lived serverless function: a browser poll can wait up to 30 seconds and a process retains the paired session and MCP transport state in memory. Every route, including `/healthz`, requires `Authorization: Bearer <DRONELAB_RELAY_SECRET>`.
@@ -55,3 +57,7 @@ npm run smoke
 ```
 
 The smoke test starts the relay, then uses the actual SDK client to initialize Streamable HTTP, list tools, issue `get_capabilities`, and receive a clearly labelled fixture response from a simulated browser poll client. It does not test a real browser simulation or live provider account.
+
+The production browser bridge command is `npx tsx test/browser-smoke.ts`. It runs against the configured production URL and exercises pairing, MCP tool calls, authority changes, and disconnect rejection; it requires a running relay and browser URL. Provider credentials were not configured, so live provider calls remain unverified.
+
+The browser worker bounds replay results to a 4 MB cache, 60-second TTL, and 128 entries. Results too large to replay return `result_replay_unavailable`. A batch accepts 1–32 episodes but rejects more than 20,000 total decisions; individual advance requests are capped at 1,200 ticks. The relay queue defaults to 32 and is bounded by the configured maximum of 128.

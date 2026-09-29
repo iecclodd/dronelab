@@ -6,7 +6,7 @@ This roadmap records gaps visible in the current source rather than promising an
 
 * The product is a research game with a modest browser quadrotor model, not a validated aircraft or real-drone controller.
 * Learning is supervised behavior cloning. PPO or another reinforcement-learning trainer is not implemented.
-* Inputs are state observations and six scalar ranges. Camera images, depth, multimodal policies, and dataset farms are not implemented.
+* The renderer can capture an RGB PNG at a paused, expected simulation step. Image/depth observations, multimodal policies, and dataset farms are not implemented.
 * Runs, checkpoints, and relay state are local or in-memory. There is no shared run registry, durable job queue, or multi-device collaboration.
 * The optional relay has no provider credentials by default. Live provider accounts were not verified; the relay is operator-trusted and requires TLS deployment.
 * The browser export is the implemented run ZIP; there is no separate fleet dataset catalog or schema migration system.
