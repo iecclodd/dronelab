@@ -5,7 +5,7 @@
  * the simulator.
  */
 export interface NavState {
-  worldId: "valley" | "pizzeria";
+  worldId: "valley" | "pizzeria" | "city";
   waypoint: number;
   visited: readonly string[];
 }

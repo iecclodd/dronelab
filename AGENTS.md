@@ -21,3 +21,7 @@ Explore explicitly selects `flightFeel: arcade`. Omitted profiles and practice m
 ## Arcade combat pass
 
 Explore's arcade profile is a hover-ball model (sim-core `arcadeDrive`): camera-relative velocity chase, reflective bounces, springy map edges, and one-shot `impulse`/`pulse` kicks on actions. Never apply it to research or missions. `combat-store.ts` connects input, `CombatLayer.tsx` (gun, targets, explosions, ramming) and `CombatHud.tsx`. `window.dronelabCombat` is a read-only test hook. Keep new bindings consistent with docs/ARCADE_COMBAT.md.
+
+## Lumina District (mapId "city")
+
+`packages/contracts/city-world.ts` holds building placements and colliders; collapsed towers have colliders cut to the break height, matching the clip planes in `CityWorld.tsx`. Cars and Ethereals are combat targets (not colliders), loaded by `CityCombatLayer`. Third-party models are CC0 and recorded in docs/CITY_ASSETS.md; keep new assets licensed and recorded there. Another agent owns AI integration and the backend (apps/api, packages/mcp-server, AI tooling). Pull and rebase before pushing.

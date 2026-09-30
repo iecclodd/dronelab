@@ -11,7 +11,7 @@ type AppApi = {
   resetFlight: (options?: {
     scenario?: string;
     seed?: number;
-    mapId?: "valley" | "pizzeria";
+    mapId?: "valley" | "pizzeria" | "city";
   }) => Promise<void>;
   train: () => Promise<any>;
   runExperiment: () => Promise<any>;
@@ -49,14 +49,14 @@ const schemas = {
   reset_session: z
     .object({
       scenario: z.enum(["hover", "gates", "landing", "free"]).optional(),
-      mapId: z.enum(["valley", "pizzeria"]).optional(),
+      mapId: z.enum(["valley", "pizzeria", "city"]).optional(),
       seed: z.number().int().min(0).max(0xffffffff).optional(),
     })
     .strict(),
   set_mission: z
     .object({
       scenario: z.enum(["hover", "gates", "landing", "free"]),
-      mapId: z.enum(["valley", "pizzeria"]).optional(),
+      mapId: z.enum(["valley", "pizzeria", "city"]).optional(),
       seed: z.number().int().min(0).max(0xffffffff).optional(),
     })
     .strict(),

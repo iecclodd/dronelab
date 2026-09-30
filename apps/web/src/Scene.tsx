@@ -9,7 +9,9 @@ import { BlenderDrone } from "./BlenderDrone";
 import { levelFlightQuaternion, type FlightLook } from "./flight-controls";
 import { LOOKS, ToonPipeline } from "./toon-pipeline";
 import { LandmarkBeacons } from "./WorldFx";
-import { CombatLayer } from "./CombatLayer";
+import { CityCombatLayer, CombatLayer } from "./CombatLayer";
+import { CityWorld } from "./CityWorld";
+import { CITY_WORLD } from "../../../packages/contracts/city-world";
 import { cameraShake } from "./combat-store";
 import { presented, updatePresentation } from "./presentation";
 import { FREE_WORLD } from "../../../packages/contracts/free-world";
@@ -571,9 +573,15 @@ export function FlightScene({
       dpr={[1, 1.5]}
       gl={{ antialias: true, preserveDrawingBuffer: true }}
     >
-      {scenario?.id === "free" ? scenario.mapId === "pizzeria" ? <PizzeriaWorld scenario={scenario} /> : <OpenWorld scenario={scenario} /> : <World scenario={scenario} />}
+      {scenario?.id === "free"
+        ? scenario.mapId === "pizzeria" ? <PizzeriaWorld scenario={scenario} />
+        : scenario.mapId === "city" ? <Suspense fallback={null}><CityWorld scenario={scenario} /></Suspense>
+        : <OpenWorld scenario={scenario} />
+        : <World scenario={scenario} />}
       {scenario?.id === "free" && (scenario.mapId === "pizzeria"
         ? <LandmarkBeacons key="pizzeria" world={PIZZERIA_WORLD} worldId="pizzeria" radius={0.32} height={(base) => Math.max(0, 5.9 - base)} state={state} />
+        : scenario.mapId === "city"
+        ? <LandmarkBeacons key="city" world={CITY_WORLD} worldId="city" radius={1.2} height={() => 90} state={state} />
         : <LandmarkBeacons key="valley" world={FREE_WORLD} worldId="valley" radius={1.4} height={() => 70} state={state} />)}
       <Suspense fallback={<Drone state={state} hidden={cameraMode === "FPV"} />}>
         <BlenderDrone state={state} hidden={cameraMode === "FPV"} smooth />
@@ -581,11 +589,23 @@ export function FlightScene({
       </Suspense>
       <PresentationClock state={state} />
       <VelocityTrails state={state} enabled={effectsEnabled && cameraMode === "FPV"} />
-      {scenario?.id === "free" && (
+      {scenario?.id === "free" && scenario.mapId === "city" && (
+        <Suspense fallback={null}>
+          <CityCombatLayer
+            key="combat-city"
+            world={CITY_WORLD}
+            mapId="city"
+            state={state}
+            firstPerson={cameraMode === "FPV"}
+            effectsEnabled={effectsEnabled}
+          />
+        </Suspense>
+      )}
+      {scenario?.id === "free" && scenario.mapId !== "city" && (
         <CombatLayer
           key={`combat-${scenario.mapId ?? "valley"}`}
           world={scenario.mapId === "pizzeria" ? PIZZERIA_WORLD : FREE_WORLD}
-          mapId={scenario.mapId === "pizzeria" ? "pizzeria" : "valley"}
+          mapId={scenario.mapId ?? "valley"}
           state={state}
           firstPerson={cameraMode === "FPV"}
           effectsEnabled={effectsEnabled}
@@ -612,7 +632,7 @@ export function FlightScene({
         onCapture={onCapture}
       />
       <ToonPipeline
-        look={scenario?.id === "free" ? scenario.mapId === "pizzeria" ? LOOKS.pizzeria : LOOKS.valley : LOOKS.lab}
+        look={scenario?.id === "free" ? LOOKS[scenario.mapId ?? "valley"] : LOOKS.lab}
         state={state}
         effectsEnabled={effectsEnabled}
         firstPerson={cameraMode === "FPV"}

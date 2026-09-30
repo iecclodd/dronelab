@@ -110,7 +110,7 @@ export function levelFlightQuaternion(quaternion: Q4): Q4 {
 /** Player-facing setpoints. The simulator independently enforces its profile cap. */
 export function assistedSpeeds(
   flightFeel: FlightFeel = "research",
-  mapId?: "valley" | "pizzeria",
+  mapId?: "valley" | "pizzeria" | "city",
 ) {
   if (flightFeel !== "arcade")
     return { cruise: RESEARCH_NAV_SPEED, boost: RESEARCH_BOOST_SPEED };
@@ -129,7 +129,7 @@ export function assistedAction(
     yaw: number;
     boost?: boolean;
     flightFeel?: FlightFeel;
-    mapId?: "valley" | "pizzeria";
+    mapId?: "valley" | "pizzeria" | "city";
   },
   lookPitch = 0,
 ): Action {
@@ -169,7 +169,7 @@ export function headingOf(quaternion: Q4) {
 export function cameraRelativeAction(
   quaternion: Q4,
   look: FlightLook,
-  input: { forward: number; right: number; up: number; boost?: boolean; mapId?: "valley" | "pizzeria" },
+  input: { forward: number; right: number; up: number; boost?: boolean; mapId?: "valley" | "pizzeria" | "city" },
 ): Extract<Action, { kind: "nav" }> {
   const speeds = assistedSpeeds("arcade", input.mapId);
   const speed = input.boost ? speeds.boost : speeds.cruise;
@@ -250,7 +250,7 @@ type FlightControlsOptions = {
   cameraMode?: "FPV" | "Chase" | "Orbit";
   cameraTilt?: number;
   flightFeel?: FlightFeel;
-  mapId?: "valley" | "pizzeria";
+  mapId?: "valley" | "pizzeria" | "city";
 };
 
 const flightKey = new Set([

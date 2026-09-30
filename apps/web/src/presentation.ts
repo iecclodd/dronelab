@@ -30,14 +30,19 @@ let receivedAt = 0;
 
 const toThree = (v: readonly number[], out: THREE.Vector3) => out.set(v[0]!, v[2]!, -v[1]!);
 
+let lastState: PhysicalState | undefined;
+
 export function updatePresentation(state: PhysicalState | undefined, now: number, dt: number) {
-  if (!state) { presented.valid = false; return; }
-  const fresh = state.step !== presented.step || state.time !== presented.time;
+  if (!state) { presented.valid = false; lastState = undefined; return; }
+  // Every published state is a new object; identity catches resets and world
+  // switches even when step and time are unchanged (both 0 before takeoff).
+  const fresh = state !== lastState;
+  lastState = state;
   if (fresh) {
-    // A reset or replay jump: snap instead of smoothing across it.
-    const discontinuity = !presented.valid || state.time < presented.time || Math.abs(state.step - presented.step) > 40;
     const before = presented.position.clone();
     toThree(state.position, base);
+    // A reset, world switch or replay jump: snap instead of smoothing across it.
+    const discontinuity = !presented.valid || state.time < presented.time || Math.abs(state.step - presented.step) > 40 || before.distanceTo(base) > 12;
     toThree(state.velocity, velocity);
     receivedAt = now;
     presented.step = state.step;

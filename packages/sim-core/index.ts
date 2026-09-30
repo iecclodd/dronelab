@@ -28,6 +28,7 @@ import {
   type FreeWorldMapId,
 } from "../contracts/free-world.ts";
 import { PIZZERIA_WORLD } from "../contracts/pizzeria-world.ts";
+import { CITY_WORLD } from "../contracts/city-world.ts";
 
 export type Vec3 = V3;
 type Quat = [number, number, number, number];
@@ -92,7 +93,7 @@ class Rng {
  */
 export const FREE_WORLD_MAPS: Partial<
   Record<FreeWorldMapId, FreeWorldDefinition>
-> = { valley: FREE_WORLD, pizzeria: PIZZERIA_WORLD };
+> = { valley: FREE_WORLD, pizzeria: PIZZERIA_WORLD, city: CITY_WORLD };
 
 export function freeWorldForMap(
   mapId: FreeWorldMapId | undefined,
@@ -110,7 +111,7 @@ export function createFreeScenario(
     name: world.name,
     description: `Explore ${world.name} inside its documented flight bounds.`,
     spawn: [...world.spawn] as V3,
-    targets: [mapId === "pizzeria" ? [8, 0, 2] : [70, 0, 8]],
+    targets: [mapId === "pizzeria" ? [8, 0, 2] : mapId === "city" ? [0, 0, 30] : [70, 0, 8]],
     pad: [0, 0, 0],
     obstacles: world.obstacles,
   };

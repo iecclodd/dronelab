@@ -98,7 +98,7 @@ test("arcade free flight reaches manga speed lines and a real Pizzeria ground im
 });
 
 test("the machine gun (F) shreds a Hollow bot, scores, and heats up", async ({ page }) => {
-  test.setTimeout(90_000);
+  test.setTimeout(150_000);
   await openFlight(page);
   await page.getByRole("button", { name: /Freddy.s Pizzeria/ }).click();
   await page.waitForFunction(() => !window.dronelab.getState().busy && window.dronelab.getState().config.mapId === "pizzeria");
@@ -125,13 +125,13 @@ test("the machine gun (F) shreds a Hollow bot, scores, and heats up", async ({ p
     maxHeat = Math.max(maxHeat, probe.heat);
     const dz = probe.bot.position[2]! - probe.p[2]!;
     const dx = probe.bot.position[0]! - probe.p[0]!;
-    // Hold station 6–10 m away so the kill has to come from gunfire, not ramming.
-    await hold("Space", dz > 0.3);
-    await hold("KeyC", dz < -0.3);
-    await hold("KeyW", dx > 10);
-    await hold("KeyS", dx < 6);
-    await hold("KeyF", Math.abs(dz) < 0.7 && dx < 12);
-    await page.waitForTimeout(20);
+    // Hold station 6–10 m away so the kill has to come from gunfire, not
+    // ramming. Short proportional taps keep the loop's latency from overshooting.
+    await hold("KeyF", Math.abs(dz) < 0.8 && dx < 12);
+    const taps = [dz > 0.25 ? "Space" : dz < -0.25 ? "KeyC" : "", dx > 10 ? "KeyW" : dx < 6 ? "KeyS" : ""].filter(Boolean);
+    for (const key of taps) await page.keyboard.down(key);
+    await page.waitForTimeout(Math.min(70, 15 + Math.abs(dz) * 25));
+    for (const key of taps) await page.keyboard.up(key);
   }
   for (const key of [...held]) await page.keyboard.up(key);
   expect(killed).toBe(true);

@@ -27,7 +27,7 @@ export interface ToonLook {
   sun: [number, number, number];
 }
 
-export const LOOKS: Record<"valley" | "pizzeria" | "lab", ToonLook> = {
+export const LOOKS: Record<"valley" | "pizzeria" | "city" | "lab", ToonLook> = {
   valley: {
     ink: [0.16, 0.13, 0.24], inkStrength: 1, inkFade: [90, 320],
     shadowTint: [0.78, 0.8, 1.22], lightTint: [1.07, 1.01, 0.9],
@@ -37,6 +37,11 @@ export const LOOKS: Record<"valley" | "pizzeria" | "lab", ToonLook> = {
     ink: [0.12, 0.09, 0.2], inkStrength: 1, inkFade: [22, 55],
     shadowTint: [0.86, 0.72, 1.3], lightTint: [1.1, 0.98, 0.84],
     saturation: 1.18, halftone: 0.34, glow: 0.85, glowThreshold: 0.9, vignette: 0.34, sun: [-12, 15, 8],
+  },
+  city: {
+    ink: [0.1, 0.07, 0.12], inkStrength: 1, inkFade: [70, 240],
+    shadowTint: [0.95, 0.72, 1.25], lightTint: [1.14, 0.95, 0.8],
+    saturation: 1.16, halftone: 0.26, glow: 0.9, glowThreshold: 1.1, vignette: 0.38, sun: [140, -90, 70],
   },
   lab: {
     ink: [0.38, 0.4, 0.42], inkStrength: 0.6, inkFade: [30, 120],
@@ -311,6 +316,8 @@ export function ToonPipeline({
     return {
       color, normal, normalMaterial, material, quad, quadScene, quadCamera,
       hidden: [] as THREE.Object3D[],
+      swapped: [] as [THREE.Mesh, THREE.Material][],
+      clippedNormals: new WeakMap<THREE.Material, THREE.MeshNormalMaterial>(),
       clear: new THREE.Color(),
       sun: new THREE.Vector3(),
       buffer: new THREE.Vector2(),
@@ -359,7 +366,7 @@ export function ToonPipeline({
   }, [gl, size, pipeline]);
 
   useFrame((_, dt) => {
-    const { color, normal, normalMaterial, material, quadScene, quadCamera, hidden, fx, governor } = pipeline;
+    const { color, normal, normalMaterial, material, quadScene, quadCamera, hidden, swapped, clippedNormals, fx, governor } = pipeline;
     const u = material.uniforms;
     stylizedTime.value += Math.min(dt, 0.1);
     const perspective = camera as THREE.PerspectiveCamera;
@@ -407,10 +414,31 @@ export function ToonPipeline({
     gl.getClearColor(pipeline.clear);
     const clearAlpha = gl.getClearAlpha();
     hidden.length = 0;
-    scene.traverseVisible((object) => { if (object !== scene && !shouldInk(object)) hidden.push(object); });
+    swapped.length = 0;
+    scene.traverseVisible((object) => {
+      if (object === scene) return;
+      if (!shouldInk(object)) { hidden.push(object); return; }
+      // Clipped materials (collapsed towers) need a normal material with the
+      // same planes, or the ink would outline the uncut building.
+      const mesh = object as THREE.Mesh;
+      const material = mesh.isMesh && !Array.isArray(mesh.material) ? mesh.material : undefined;
+      if (material?.clippingPlanes?.length) {
+        let clipped = clippedNormals.get(material);
+        if (!clipped) {
+          clipped = new THREE.MeshNormalMaterial({ side: material.side });
+          clipped.clippingPlanes = material.clippingPlanes;
+          clipped.clipIntersection = material.clipIntersection;
+          clippedNormals.set(material, clipped);
+        }
+        swapped.push([mesh, material]);
+        mesh.material = clipped;
+      } else if (mesh.isMesh) {
+        swapped.push([mesh, mesh.material as THREE.Material]);
+        mesh.material = normalMaterial;
+      }
+    });
     for (const object of hidden) object.visible = false;
     scene.background = null;
-    scene.overrideMaterial = normalMaterial;
     gl.shadowMap.autoUpdate = false;
     gl.setClearColor(0x8080ff, 1);
     gl.setRenderTarget(normal);
@@ -418,7 +446,7 @@ export function ToonPipeline({
     gl.render(scene, camera);
     gl.shadowMap.autoUpdate = autoUpdate;
     gl.setClearColor(pipeline.clear, clearAlpha);
-    scene.overrideMaterial = null;
+    for (const [mesh, material] of swapped) mesh.material = material;
     scene.background = background;
     for (const object of hidden) object.visible = true;
 

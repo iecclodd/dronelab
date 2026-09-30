@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, type MutableRefObject } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
+import { useGLTF } from "@react-three/drei";
+import { clone as cloneSkinned } from "three/examples/jsm/utils/SkeletonUtils.js";
 import type { Obstacle, PhysicalState, V3 } from "../../../packages/contracts";
-import type { FreeWorldDefinition } from "../../../packages/contracts/free-world";
+import type { FreeWorldDefinition, FreeWorldMapId } from "../../../packages/contracts/free-world";
+import { CITY_RUBBLE } from "../../../packages/contracts/city-world";
 import { rimLight } from "./cel-material";
 import { addTrauma, combatEvents, combatInput, combatSfx, combatStats, droneFx, queueKick, type CombatEvent } from "./combat-store";
 
@@ -14,13 +17,58 @@ import { addTrauma, combatEvents, combatInput, combatSfx, combatStats, droneFx, 
  * *reacts* to them through kicks. Game logic runs in ENU; rendering in Three.
  */
 
-type Kind = "bot" | "barrel";
-interface TargetSpec { id: string; kind: Kind; position: V3 }
+type Kind = "bot" | "barrel" | "car" | "ethereal";
+interface TargetSpec {
+  id: string;
+  kind: Kind;
+  position: V3;
+  /** car / ethereal model name */
+  model?: string;
+  /** car heading (radians) */
+  yaw?: number;
+  flipped?: 0 | 1 | 2;
+  burning?: boolean;
+  hp?: number;
+  /** Oversized ground-hugging brute (a giant golem): punches when you fly low. */
+  boss?: boolean;
+}
 
 const bot = (id: string, position: V3): TargetSpec => ({ id, kind: "bot", position });
 const barrel = (id: string, x: number, y: number): TargetSpec => ({ id, kind: "barrel", position: [x, y, 0.55] });
 
-export const COMBAT_TARGETS: Record<"valley" | "pizzeria", TargetSpec[]> = {
+const CAR_MODELS = ["taxi", "taxi", "sedan", "police", "van", "suv", "taxi", "truck", "ambulance", "delivery", "garbage-truck", "hatchback-sports"];
+const ETHEREAL_HP: Record<string, number> = { goleling: 22, squidle: 18, dragonfly: 14 };
+const cityCars = (): TargetSpec[] => {
+  const out: TargetSpec[] = [];
+  const r = (i: number, k: number) => { const v = Math.sin(i * 91.7 + k * 13.1) * 43758.5; return v - Math.floor(v); };
+  for (let i = 0; i < 30; i++) {
+    const avenue = r(i, 1) < 0.5;
+    const lane = (r(i, 2) < 0.5 ? -1 : 1) * (avenue ? 4 : 3);
+    const x = avenue ? [-88, -44, 0, 44, 88][Math.floor(r(i, 3) * 5)]! + lane : (r(i, 4) - 0.5) * 200;
+    const y = avenue ? (r(i, 4) - 0.5) * 200 : [-96, -64, -32, 32, 64, 96][Math.floor(r(i, 3) * 6)]! + lane;
+    if (Math.hypot(x, y) < 16 || x < -96) continue;
+    if (CITY_RUBBLE.some((b) => Math.abs(b.position[0] - x) < b.size[0] / 2 + 3 && Math.abs(b.position[1] - y) < b.size[1] / 2 + 3)) continue;
+    const flip = r(i, 5);
+    out.push({
+      id: `car-${i}`, kind: "car", model: CAR_MODELS[i % CAR_MODELS.length], position: [x, y, 0],
+      yaw: (avenue ? Math.PI / 2 : 0) + (r(i, 6) < 0.5 ? Math.PI : 0) + (r(i, 7) - 0.5) * 0.9,
+      flipped: flip < 0.18 ? 2 : flip < 0.34 ? 1 : 0, burning: r(i, 8) < 0.45, hp: 6,
+    });
+  }
+  return out;
+};
+const ethereal = (id: string, model: string, position: V3): TargetSpec => ({ id, kind: "ethereal", model, position, hp: ETHEREAL_HP[model] });
+
+export const COMBAT_TARGETS: Record<FreeWorldMapId, TargetSpec[]> = {
+  city: [
+    ...cityCars(),
+    ethereal("e-gol-1", "goleling", [0, 20, 18]), ethereal("e-gol-2", "goleling", [22, 0, 24]), ethereal("e-gol-3", "goleling", [-44, -20, 14]),
+    ethereal("e-gol-4", "goleling", [44, 40, 20]), ethereal("e-gol-5", "goleling", [66, -64, 18]), ethereal("e-gol-6", "goleling", [88, 10, 22]),
+    ethereal("e-squ-1", "squidle", [-20, 0, 16]), ethereal("e-squ-2", "squidle", [0, -40, 22]), ethereal("e-squ-3", "squidle", [44, -20, 30]),
+    ethereal("e-squ-4", "squidle", [-88, -40, 18]), ethereal("e-squ-5", "squidle", [22, 80, 24]),
+    ethereal("e-dra-1", "dragonfly", [-44, 80, 20]), ethereal("e-dra-2", "dragonfly", [88, 64, 16]), ethereal("e-dra-3", "dragonfly", [-10, 40, 34]), ethereal("e-dra-4", "dragonfly", [30, -90, 20]),
+    { ...ethereal("e-boss-1", "goleling", [0, 0, 3.6]), boss: true, hp: 90 }, { ...ethereal("e-boss-2", "goleling", [-44, -48, 3.6]), boss: true, hp: 90 },
+  ],
   valley: [
     bot("air-1", [30, 12, 6]), bot("air-2", [46, 22, 10]), bot("air-3", [-12, 32, 8]),
     bot("yard-1", [46, -44, 7]), bot("yard-2", [65, -48, 11]), bot("yard-3", [96, -12, 9]), bot("yard-4", [58, -18, 14]),
@@ -38,8 +86,12 @@ export const COMBAT_TARGETS: Record<"valley" | "pizzeria", TargetSpec[]> = {
   ],
 };
 
-const HP: Record<Kind, number> = { bot: 14, barrel: 3 };
-const RESPAWN: Record<Kind, number> = { bot: 8, barrel: 11 };
+const HP: Record<Kind, number> = { bot: 14, barrel: 3, car: 6, ethereal: 20 };
+const RESPAWN: Record<Kind, number> = { bot: 8, barrel: 11, car: 16, ethereal: 10 };
+const maxHp = (spec: TargetSpec) => spec.hp ?? HP[spec.kind];
+/** Hit sphere radius (m) per target. */
+const radiusOf = (spec: TargetSpec, scale: number) =>
+  spec.kind === "bot" ? 1.25 * scale : spec.kind === "barrel" ? 0.6 : spec.kind === "car" ? 2.3 : spec.boss ? 3.2 : 1.9;
 const FIRE_RATE = 13;
 const HEAT_PER_SHOT = 0.042;
 const HEAT_COOL = 0.46;
@@ -89,6 +141,115 @@ interface Live {
   group?: THREE.Group;
   materials: THREE.MeshToonMaterial[];
   eyes?: THREE.MeshBasicMaterial;
+  mixer?: THREE.AnimationMixer;
+  actions?: Record<string, THREE.AnimationAction>;
+  current?: string;
+  fire?: THREE.Object3D;
+  ai?: { attackReady: number; hitAt: number; lungeAt: number };
+}
+
+/** Loaded GLB sources for the city (cars, Ethereals, car debris). */
+export interface CombatModels {
+  cars: Record<string, THREE.Object3D>;
+  ethereals: Record<string, { scene: THREE.Object3D; animations: THREE.AnimationClip[] }>;
+  debris: THREE.Object3D[];
+}
+
+function toonCar(source: THREE.Object3D, gradient: THREE.Texture, live: Live) {
+  const car = source.clone(true);
+  car.traverse((child) => {
+    const mesh = child as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const original = mesh.material as THREE.MeshStandardMaterial;
+    const toon = new THREE.MeshToonMaterial({ map: original.map, color: original.color, gradientMap: gradient });
+    live.materials.push(toon);
+    mesh.material = toon;
+    mesh.castShadow = true;
+  });
+  return car;
+}
+
+function buildCar(models: CombatModels, gradient: THREE.Texture, live: Live) {
+  const g = new THREE.Group();
+  const body = toonCar(models.cars[live.spec.model ?? "taxi"] ?? models.cars.taxi!, gradient, live);
+  body.scale.setScalar(1.7);
+  if (live.spec.flipped === 1) { body.rotation.z = Math.PI / 2; body.position.y = 1.3; }
+  if (live.spec.flipped === 2) { body.rotation.x = Math.PI; body.position.y = 2.3; }
+  body.rotation.y = 0;
+  g.add(body);
+  g.rotation.y = live.spec.yaw ?? 0;
+  if (live.spec.burning) {
+    // Inked manga fire: stepped toon cones that flicker on a held clock.
+    const fire = new THREE.Group();
+    const colours = ["#ff5a1f", "#ff9a2a", "#ffe07a"];
+    for (let i = 0; i < 5; i++) {
+      const cone = new THREE.Mesh(new THREE.ConeGeometry(0.55 - (i % 3) * 0.12, 1.6 + (i % 3) * 0.5, 7), new THREE.MeshToonMaterial({ color: colours[i % 3], emissive: colours[i % 3], emissiveIntensity: 0.9, gradientMap: gradient }));
+      cone.position.set((i - 2) * 0.55, 2.2 + (i % 2) * 0.3, ((i * 7) % 3 - 1) * 0.5);
+      fire.add(cone);
+    }
+    live.fire = fire;
+    g.add(fire);
+  }
+  return g;
+}
+
+const ETHEREAL_HEIGHT: Record<string, number> = { goleling: 2.6, squidle: 2.4, dragonfly: 2.2 };
+function buildEthereal(models: CombatModels, gradient: THREE.Texture, live: Live) {
+  const source = models.ethereals[live.spec.model ?? "goleling"]!;
+  const body = cloneSkinned(source.scene) as THREE.Object3D;
+  // Ethereal palette: void-black hide, neon magenta accents, burning eyes.
+  body.traverse((child) => {
+    const mesh = child as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    mesh.frustumCulled = false;
+    const name = ((mesh.material as THREE.Material).name || "").toLowerCase();
+    let material: THREE.Material;
+    if (name.includes("eye_white")) material = new THREE.MeshBasicMaterial({ color: new THREE.Color("#ffe14d").multiplyScalar(2.5), toneMapped: false });
+    else if (name.includes("eye_black")) material = new THREE.MeshBasicMaterial({ color: "#16020c" });
+    else {
+      const accent = name.includes("secondary") || name.includes("horn") || name.includes("wing") || name.includes("tongue") || name.includes("mouth") || name.includes("belt");
+      const toon = new THREE.MeshToonMaterial({ color: accent ? "#e8397a" : "#1d1628", emissive: accent ? "#b0104a" : "#2a0c3a", emissiveIntensity: accent ? 0.6 : 0.35, gradientMap: gradient });
+      if (!accent) { toon.onBeforeCompile = rimLight; toon.customProgramCacheKey = () => "cel-rim"; }
+      live.materials.push(toon);
+      material = toon;
+    }
+    mesh.material = material;
+    mesh.castShadow = true;
+  });
+  const holder = new THREE.Group();
+  holder.add(body);
+  // Size from the skeleton: these rigs store tiny raw vertices scaled up by
+  // the armature, so geometry bounds are unreliable for skinned meshes.
+  body.updateMatrixWorld(true);
+  const box = new THREE.Box3();
+  const point = new THREE.Vector3();
+  body.traverse((o) => { if ((o as THREE.Bone).isBone) box.expandByPoint(o.getWorldPosition(point)); });
+  if (box.isEmpty()) box.setFromObject(body);
+  const size = box.getSize(new THREE.Vector3());
+  const k = (live.spec.boss ? 7.5 : ETHEREAL_HEIGHT[live.spec.model ?? "goleling"] ?? 2.5) / Math.max(size.y * 1.25, 1e-4);
+  body.scale.multiplyScalar(k);
+  body.position.y = -box.min.y * k - (size.y * k) / 2;
+  holder.userData.debugHeight = size.y * k;
+  live.mixer = new THREE.AnimationMixer(body);
+  live.actions = {};
+  for (const clip of source.animations) {
+    const short = clip.name.split("|").pop()!;
+    live.actions[short] = live.mixer.clipAction(clip);
+  }
+  live.ai = { attackReady: 0, hitAt: -10, lungeAt: -10 };
+  return holder;
+}
+
+function play(live: Live, name: string, once = false) {
+  const action = live.actions?.[name];
+  if (!action || live.current === name) return;
+  const previous = live.current ? live.actions?.[live.current] : undefined;
+  action.reset();
+  action.setLoop(once ? THREE.LoopOnce : THREE.LoopRepeat, once ? 1 : Infinity);
+  action.clampWhenFinished = once;
+  action.fadeIn(0.12).play();
+  previous?.fadeOut(0.12);
+  live.current = name;
 }
 
 function makeGradient() {
@@ -263,34 +424,46 @@ export function CombatLayer({
   state,
   firstPerson,
   effectsEnabled,
+  models,
 }: {
   world: FreeWorldDefinition;
-  mapId: "valley" | "pizzeria";
+  mapId: FreeWorldMapId;
   state: MutableRefObject<PhysicalState | undefined>;
   firstPerson: boolean;
   effectsEnabled: boolean;
+  models?: CombatModels;
 }) {
   const { camera } = useThree();
   const scale = mapId === "pizzeria" ? 0.5 : 1;
-  const range = mapId === "pizzeria" ? 70 : 280;
+  const range = mapId === "pizzeria" ? 70 : mapId === "city" ? 230 : 280;
   const ceiling = mapId === "pizzeria" ? world.ceiling : undefined;
   const gradient = useMemo(makeGradient, []);
   const star = useMemo(() => starGeometry(), []);
 
   const targets = useMemo<Live[]>(() => COMBAT_TARGETS[mapId].map((spec) => ({
-    spec, hp: HP[spec.kind], alive: true, respawnAt: 0, spawnedAt: -10, flash: 0, pendingDeathAt: Infinity, materials: [],
+    spec, hp: maxHp(spec), alive: true, respawnAt: 0, spawnedAt: -10, flash: 0, pendingDeathAt: Infinity, materials: [],
   })), [mapId]);
   const root = useMemo(() => {
     const group = new THREE.Group();
     group.name = "combat";
     for (const live of targets) {
-      live.group = live.spec.kind === "bot" ? buildBot(gradient, live) : buildBarrel(gradient, live);
-      live.group.scale.setScalar(live.spec.kind === "bot" ? scale : 1);
+      const kind = live.spec.kind;
+      if ((kind === "car" || kind === "ethereal") && !models) continue;
+      live.group = kind === "bot" ? buildBot(gradient, live) : kind === "barrel" ? buildBarrel(gradient, live) : kind === "car" ? buildCar(models!, gradient, live) : buildEthereal(models!, gradient, live);
+      if (kind === "bot") live.group.scale.setScalar(scale);
       three(live.spec.position, live.group.position);
       group.add(live.group);
     }
     return group;
-  }, [targets, gradient, scale]);
+  }, [targets, gradient, scale, models]);
+  // Car explosions throw real Kenney car parts.
+  const debris = useMemo(() => (models?.debris ?? []).flatMap((source) => Array.from({ length: 4 }, () => {
+    const mesh = toonCar(source, gradient, { materials: [] } as unknown as Live);
+    mesh.scale.setScalar(1.7);
+    mesh.visible = false;
+    return { mesh, v: new THREE.Vector3(), spin: new THREE.Vector3(), life: 0 };
+  })), [models, gradient]);
+  const debrisCursor = useRef(0);
 
   const fx = useMemo(() => {
     const explosions = Array.from({ length: 7 }, () => new Explosion(gradient, star));
@@ -355,10 +528,22 @@ export function CombatLayer({
     live.pendingDeathAt = Infinity;
     live.respawnAt = r.time + RESPAWN[live.spec.kind];
     if (live.group) live.group.visible = false;
-    const big = live.spec.kind === "barrel";
-    const radius = (big ? 3.4 : 2.4) * (mapId === "pizzeria" ? 0.6 : 1);
+    const big = live.spec.kind === "barrel" || live.spec.kind === "car" || !!live.spec.boss;
+    const radius = (live.spec.kind === "car" ? 4.4 : live.spec.boss ? 5 : big ? 3.4 : 2.4) * (mapId === "pizzeria" ? 0.6 : 1);
     const at = three(live.spec.position, new THREE.Vector3());
-    if (live.spec.kind === "bot" && live.group) at.copy(live.group.position);
+    if (live.group) at.copy(live.group.position);
+    if (live.spec.kind === "car") {
+      at.y += 1.2;
+      for (let k = 0; k < 5 && debris.length; k++) {
+        const piece = debris[debrisCursor.current % debris.length]!;
+        debrisCursor.current++;
+        piece.mesh.position.copy(at);
+        piece.v.set(Math.random() - 0.5, 0.7 + Math.random() * 0.8, Math.random() - 0.5).normalize().multiplyScalar(12 + Math.random() * 10);
+        piece.spin.set(Math.random() * 12, Math.random() * 12, Math.random() * 12);
+        piece.life = 3.2;
+        piece.mesh.visible = true;
+      }
+    }
     const e = fx.explosions[fx.nextExplosion]!;
     fx.nextExplosion = (fx.nextExplosion + 1) % fx.explosions.length;
     e.fire_(at, radius);
@@ -368,7 +553,7 @@ export function CombatLayer({
       if (!other.alive || other === live) continue;
       const dist = three(other.spec.position, tmp.s).distanceTo(at);
       if (dist < radius * 2.2) {
-        other.hp -= big ? 99 : 6;
+        other.hp -= other.spec.boss ? (big ? 25 : 8) : big ? 99 : 6;
         if (other.hp <= 0) other.pendingDeathAt = Math.min(other.pendingDeathAt, r.time + 0.12 + dist * 0.02);
       }
     }
@@ -389,7 +574,7 @@ export function CombatLayer({
       }
     }
     if (effectsEnabled) addTrauma(shake, 1);
-    const points = (big ? 300 : 500) * (1 + Math.floor(r.combo / 20));
+    const points = (live.spec.kind === "ethereal" ? (live.spec.boss ? 2500 : 800) : live.spec.kind === "car" ? 350 : big ? 300 : 500) * (1 + Math.floor(r.combo / 20));
     r.score += points;
     r.kills += 1;
     r.killTimes = r.killTimes.filter((time) => r.time - time < 2.6).concat(r.time);
@@ -404,6 +589,7 @@ export function CombatLayer({
     const r = sim.current;
     live.hp -= amount;
     live.flash = 0.07;
+    if (live.spec.kind === "ethereal" && live.ai && r.time - live.ai.hitAt > 0.6) { live.ai.hitAt = r.time; play(live, "HitReact", true); if (!live.actions?.HitReact) play(live, "HitRecieve", true); }
     r.combo += 1;
     r.comboTimer = 2.8;
     r.score += Math.round(10 * amount * (1 + r.combo / 25));
@@ -428,7 +614,7 @@ export function CombatLayer({
     for (const live of targets) {
       if (!live.alive || !live.group) continue;
       const c = enu(live.group.position);
-      const t = raySphere(o, d, c, (live.spec.kind === "bot" ? 1.25 * scale : 0.6));
+      const t = raySphere(o, d, c, radiusOf(live.spec, scale));
       if (t !== undefined && t > minT && t < best) { best = t; hitTarget = live; }
     }
     for (const obstacle of world.obstacles) {
@@ -474,7 +660,7 @@ export function CombatLayer({
   // Read-only inspection hook for browser tests and debugging.
   useEffect(() => {
     const hook = {
-      targets: () => targets.map((t) => ({ id: t.spec.id, kind: t.spec.kind, alive: t.alive, hp: t.hp, position: t.group ? enu(t.group.position) : t.spec.position })),
+      targets: () => targets.map((t) => ({ id: t.spec.id, kind: t.spec.kind, alive: t.alive, hp: t.hp, position: t.group ? enu(t.group.position) : t.spec.position, extent: t.group ? new THREE.Box3().setFromObject(t.group).getSize(new THREE.Vector3()).toArray().map((v) => +v.toFixed(1)) : undefined })),
       stats: () => combatStats.get(),
     };
     (window as unknown as { dronelabCombat?: typeof hook }).dronelabCombat = hook;
@@ -489,9 +675,10 @@ export function CombatLayer({
     // A fresh flight (time went backwards) resets the arena and scores.
     if (s && s.time < r.lastSimTime - 0.5) {
       Object.assign(r, { fireClock: 0, heat: 0, overheated: false, combo: 0, comboTimer: 0, score: 0, kills: 0, killTimes: [], lastImpactStep: -1 });
-      for (const live of targets) { live.alive = true; live.hp = HP[live.spec.kind]; live.pendingDeathAt = Infinity; live.spawnedAt = r.time; if (live.group) live.group.visible = true; }
+      for (const live of targets) { live.alive = true; live.hp = maxHp(live.spec); live.pendingDeathAt = Infinity; live.spawnedAt = r.time; if (live.group) { live.group.visible = true; three(live.spec.position, live.group.position); } }
       combatStats.reset();
     }
+    const simLive = !!s && s.time > r.lastSimTime && !s.terminated && !s.truncated;
     if (s) r.lastSimTime = s.time;
 
     // Trigger + heat.
@@ -502,13 +689,19 @@ export function CombatLayer({
       while (r.fireClock >= 1 / FIRE_RATE && !r.overheated) { r.fireClock -= 1 / FIRE_RATE; shoot(); }
     } else r.fireClock = 1 / FIRE_RATE;
 
-    // Targets: bob, face the player, flash, respawn, chain deaths, ramming.
+    // Targets: bob, face the player, flash, respawn, chain deaths, ramming,
+    // and Ethereal AI (chase, headbutt/punch with knockback).
     if (s) three(s.position, tmp.drone);
     for (const live of targets) {
       const g = live.group;
       if (!g) continue;
+      live.mixer?.update(dt);
       if (!live.alive) {
-        if (r.time >= live.respawnAt) { live.alive = true; live.hp = HP[live.spec.kind]; live.spawnedAt = r.time; g.visible = true; }
+        if (r.time >= live.respawnAt) {
+          live.alive = true; live.hp = maxHp(live.spec); live.spawnedAt = r.time; g.visible = true;
+          three(live.spec.position, g.position);
+          live.current = undefined;
+        }
         continue;
       }
       if (r.time >= live.pendingDeathAt) { explode(live, "chain"); continue; }
@@ -520,24 +713,84 @@ export function CombatLayer({
         const halo = g.getObjectByName("halo");
         if (halo) halo.rotation.z = r.time * 2.4;
         if (live.eyes) live.eyes.color.set(live.hp < HP.bot * 0.4 ? "#ff3b5c" : "#ffe14d").multiplyScalar(Math.sin(r.time * 3 + phase) > 0.96 ? 0.1 : 1.6);
+      } else if (live.spec.kind === "car" && live.fire) {
+        const tick = Math.floor(r.time * 12);
+        live.fire.children.forEach((cone, i) => { cone.scale.set(1, 0.75 + ((tick * 7 + i * 13) % 10) / 22, 1); });
+      } else if (live.spec.kind === "ethereal" && live.ai && s) {
+        const brute = live.spec.boss;
+        const toDrone = tmp.s.copy(tmp.drone).sub(g.position);
+        if (brute) toDrone.y = 0;
+        const dist = toDrone.length();
+        // Only hunt while the flight is live, with a short grace period after launch.
+        const aggro = simLive && s.time > 3 && dist < (brute ? 45 : 60);
+        const hitReacting = r.time - live.ai.hitAt < 0.45;
+        const lunging = r.time - live.ai.lungeAt < 0.55;
+        if (aggro && !hitReacting) {
+          const keep = brute ? 4 : 2.6;
+          const speed = brute ? 7.5 : 10;
+          if (dist > keep) g.position.addScaledVector(toDrone.normalize(), Math.min(dist - keep, speed * dt));
+          if (!brute) g.position.y = THREE.MathUtils.lerp(g.position.y, tmp.drone.y + Math.sin(r.time * 2 + phase) * 0.6, 1 - Math.exp(-dt * 2.5));
+          const lowEnough = !brute || tmp.drone.y < 9;
+          if (dist < keep + 1.6 && lowEnough && r.time > live.ai.attackReady) {
+            live.ai.attackReady = r.time + (brute ? 2.2 : 1.6);
+            live.ai.lungeAt = r.time;
+            play(live, brute ? "Punch" : "Headbutt", true);
+            // The hit lands a beat into the swing: knockback + shake + SFX.
+            window.setTimeout(() => {
+              const s2 = state.current;
+              if (!live.alive || !s2 || !live.group) return;
+              const d2 = three(s2.position, new THREE.Vector3()).sub(live.group.position);
+              if (d2.length() > (brute ? 7.5 : 4.8)) return;
+              const kick = d2.normalize().multiplyScalar(brute ? 26 : 16);
+              kick.y += brute ? 10 : 4;
+              queueKick(enu(kick));
+              if (effectsEnabled) addTrauma(brute ? 0.75 : 0.45, brute ? 1 : 0.5);
+              const screen = project(three(s2.position, new THREE.Vector3()));
+              emit({ type: "bounce", x: screen.x, y: screen.y, speed: brute ? 40 : 24 });
+              combatSfx.play("bounce", brute ? 30 : 18);
+            }, brute ? 380 : 260);
+          } else if (!lunging) play(live, "Fast_Flying");
+        } else if (!hitReacting && !lunging) {
+          // Drift home and idle.
+          const home = toDrone.copy(base).sub(g.position);
+          if (home.length() > 0.5) g.position.addScaledVector(home.normalize(), Math.min(home.length(), 4 * dt));
+          if (!brute) g.position.y += Math.sin(r.time * 1.4 + phase) * 0.01;
+          play(live, "Flying_Idle");
+        }
+        tmp.q.setFromAxisAngle(tmp.up.set(0, 1, 0), Math.atan2(tmp.drone.x - g.position.x, tmp.drone.z - g.position.z));
+        g.quaternion.slerp(tmp.q, 1 - Math.exp(-dt * 8));
       }
       const spawn = Math.min(1, (r.time - live.spawnedAt) / 0.35);
       const pop = spawn < 1 ? 1 + Math.sin(spawn * Math.PI) * 0.35 : 1;
-      g.scale.setScalar((live.spec.kind === "bot" ? scale : 1) * (spawn < 1 ? spawn * pop : 1) * (live.flash > 0 ? 1.12 : 1));
+      g.scale.setScalar((live.spec.kind === "bot" ? scale : 1) * (spawn < 1 ? spawn * pop : 1) * (live.flash > 0 ? 1.08 : 1));
       live.flash = Math.max(0, live.flash - dt);
-      for (const m of live.materials) m.emissive.setScalar(live.flash > 0 ? 0.9 : 0);
+      for (const m of live.materials) {
+        const baseEmissive = (m.userData.baseEmissive as THREE.Color | undefined) ?? (m.userData.baseEmissive = m.emissive.clone());
+        if (live.flash > 0) m.emissive.setScalar(0.9); else m.emissive.copy(baseEmissive);
+      }
       if (s) {
-        const reach = (live.spec.kind === "bot" ? 1.3 * scale : 0.6) + 0.45;
-        if (g.position.distanceTo(tmp.drone) < reach) {
-          // Ramming a target detonates it and bounces the drone off.
-          const away = tmp.drone.clone().sub(g.position).normalize().multiplyScalar(14);
+        const reach = radiusOf(live.spec, scale) + 0.45;
+        if (g.position.distanceTo(tmp.drone) < reach + (live.spec.kind === "car" ? 0 : 0) && !(live.spec.kind === "car" && tmp.drone.y > 3.4)) {
+          // Ramming detonates a target and bounces the drone off; the brute just shrugs harder.
+          const away = tmp.drone.clone().sub(g.position).normalize().multiplyScalar(live.spec.boss ? 20 : 14);
           away.y += 4;
           queueKick(enu(away));
           r.combo += 3;
           r.comboTimer = 2.8;
-          explode(live, "ram");
+          if (live.spec.boss) { live.hp -= 12; live.flash = 0.1; if (live.hp <= 0) explode(live, "ram"); }
+          else explode(live, "ram");
         }
       }
+    }
+    // Flying car parts: ballistic, spinning, a little bounce, then gone.
+    for (const d of debris) {
+      if (d.life <= 0) continue;
+      d.life -= dt;
+      d.v.y -= 22 * dt;
+      d.mesh.position.addScaledVector(d.v, dt);
+      if (d.mesh.position.y < 0.3 && d.v.y < 0) { d.mesh.position.y = 0.3; d.v.y *= -0.35; d.v.x *= 0.6; d.v.z *= 0.6; d.spin.multiplyScalar(0.5); }
+      d.mesh.rotation.x += d.spin.x * dt; d.mesh.rotation.y += d.spin.y * dt; d.mesh.rotation.z += d.spin.z * dt;
+      if (d.life <= 0) d.mesh.visible = false;
     }
 
     // Bounces from the simulator become reactions: SFX, squash, shake.
@@ -599,6 +852,26 @@ export function CombatLayer({
     <>
       <primitive object={root} />
       <primitive object={fx.group} />
+      {debris.map((d, i) => <primitive key={i} object={d.mesh} />)}
     </>
   );
+}
+
+const CAR_URL = (name: string) => `${import.meta.env.BASE_URL}models/cars/${name}.glb`;
+const ETHEREAL_URL = (name: string) => `${import.meta.env.BASE_URL}models/ethereals/${name}.glb`;
+const CAR_NAMES = [...new Set(CAR_MODELS)];
+const ETHEREAL_NAMES = ["goleling", "squidle", "dragonfly"];
+const DEBRIS_NAMES = ["debris-tire", "debris-door", "debris-bumper"];
+
+/** City combat: loads Kenney cars/debris and the Ethereal monsters, then runs the shared combat layer. */
+export function CityCombatLayer(props: Omit<Parameters<typeof CombatLayer>[0], "models">) {
+  const cars = useGLTF(CAR_NAMES.map(CAR_URL));
+  const monsters = useGLTF(ETHEREAL_NAMES.map(ETHEREAL_URL));
+  const debris = useGLTF(DEBRIS_NAMES.map(CAR_URL));
+  const models = useMemo<CombatModels>(() => ({
+    cars: Object.fromEntries(CAR_NAMES.map((n, i) => [n, cars[i]!.scene])),
+    ethereals: Object.fromEntries(ETHEREAL_NAMES.map((n, i) => [n, { scene: monsters[i]!.scene, animations: monsters[i]!.animations }])),
+    debris: debris.map((d) => d.scene),
+  }), [cars, monsters, debris]);
+  return <CombatLayer {...props} models={models} />;
 }

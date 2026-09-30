@@ -33,7 +33,7 @@ export const ZERO_ACTION: Action = {
 export interface SimConfig {
   scenario: ScenarioId;
   /** Free-flight map selection. Omitted configurations use Aster Valley. */
-  mapId?: "valley" | "pizzeria";
+  mapId?: "valley" | "pizzeria" | "city";
   /** Omitted historical configs retain the reproducible research dynamics. */
   flightFeel?: FlightFeel;
   seed: number;
@@ -62,7 +62,7 @@ export interface Obstacle {
 export interface Scenario {
   id: ScenarioId;
   /** Free-flight map selection, preserved in snapshots and consumed by the UI. */
-  mapId?: "valley" | "pizzeria";
+  mapId?: "valley" | "pizzeria" | "city";
   name: string;
   description: string;
   spawn: V3;
@@ -244,7 +244,7 @@ export function validateConfig(value: unknown): SimConfig {
   if (
     !c ||
     !["hover", "gates", "landing", "free"].includes(c.scenario) ||
-    (c.mapId !== undefined && !["valley", "pizzeria"].includes(c.mapId)) ||
+    (c.mapId !== undefined && !["valley", "pizzeria", "city"].includes(c.mapId)) ||
     (c.flightFeel !== undefined && !["research", "arcade"].includes(c.flightFeel)) ||
     !Number.isInteger(c.seed) ||
     c.seed < 0 ||

@@ -371,3 +371,66 @@ button:disabled { cursor:not-allowed; opacity:.45; }
 @keyframes cut-text { 0% { transform:translateX(-40%); } 20% { transform:translateX(3%); } 80% { transform:translateX(-2%); } 100% { transform:translateX(30%); } }
 @media (max-width:760px) { .combo-panel { top:112px; right:16px; } .combo-rank { font-size:44px; } .combo-count b { font-size:28px; } .score-chip { top:196px; right:16px; } .pop-sfx { font-size:38px; } .cut-in-panel span { font-size:40px; } }
 @media (prefers-reduced-motion:reduce) { .pop,.combo-rank,.combo-count b,.crosshair .hit-mark,.crosshair .kill-mark,.overheat-banner,.cut-in-panel,.cut-in-panel span { animation:none !important; } .dash-burst,.cut-in { display:none; } }
+
+/* ───── Unobtrusive flight UI ─────────────────────────────────────────────
+   While flying, chrome recedes: only what you steer by stays (compass,
+   crosshair, speed, heat), small and translucent at the frame edges.
+   Pausing brings everything back. Kill feedback stays manga, just smaller. */
+.game-overlay,.game-mode > header { transition:opacity .35s ease; }
+/* Dimmed but reachable while flying (hover to reveal); fully hidden only
+   while the cursor is captured and can't click anyway. */
+.game-mode:has(.game-overlay.is-flying) > header { opacity:.14; }
+.game-mode:has(.game-overlay.is-flying) > header:hover { opacity:1; }
+.game-mode:has(.game-overlay.is-locked) > header { opacity:0; }
+.is-flying .world-heading { opacity:0; transform:translateY(-6px); pointer-events:none; transition:opacity .3s, transform .3s; }
+.is-flying .world-heading button { pointer-events:none; }
+.is-flying .pilot-tools { opacity:.18; transition:opacity .25s; }
+.is-flying .pilot-tools:hover,.is-flying .pilot-tools:focus-within { opacity:1; }
+.is-locked .pilot-tools { opacity:0; }
+.is-flying .flight-compass { top:18px; opacity:.72; transform:translateX(-50%) scale(.86); }
+.is-flying .flight-compass > small { display:none; }
+.is-flying .flight-compass > b { background:none; box-shadow:none; font-size:11px; }
+.is-flying .flight-telemetry { opacity:.78; bottom:20px; left:22px; }
+.is-flying .speed strong { font-size:40px; }
+.is-flying .speed-gauge { width:120px; height:4px; }
+.is-flying .telemetry-row,.is-flying .flight-camera { display:none; }
+/* The dock collapses to a small pause pill. */
+.is-flying .flight-dock { width:auto; padding:0; background:none; border:0; box-shadow:none; bottom:18px; }
+.is-flying .flight-dock .pilot-modes,.is-flying .flight-dock .dock-hint,.is-flying .flight-dock .retry-button { display:none; }
+.is-flying .flight-dock .flight-actions { gap:4px; }
+.is-flying .flight-dock .look-button { min-height:28px; padding:0 10px; font-size:9px; background:#17141e99; border-color:#fff4e722; color:#fff4e7cc; }
+.is-locked .flight-dock .look-button { display:none; }
+.is-flying .flight-dock { opacity:.7; transition:opacity .25s; }
+.is-flying .flight-dock:hover { opacity:1; }
+.is-flying .flight-dock .take-flight { min-height:28px; padding:0 12px; font-size:9px; background:#17141e99; color:#fff4e7cc; border:1px solid #fff4e722; box-shadow:none; }
+.is-flying .flight-dock .take-flight svg { width:12px; height:12px; }
+.is-flying .explore-map { opacity:.62; bottom:18px; right:20px; width:150px; box-shadow:none; }
+.is-flying .explore-map .map-title { display:none; }
+.is-flying .next-spot { padding:7px 9px; }
+.is-flying .speed-lines { opacity:.45 !important; }
+/* Combat HUD: quieter and tucked into the corner. */
+.crosshair { width:46px; height:46px; opacity:.85; }
+.crosshair .heat-track,.crosshair .heat-fill { stroke-width:3; }
+.combo-panel { top:22px; right:22px; transform:skewX(-10deg) scale(.62); transform-origin:top right; opacity:.9; }
+.score-chip { top:92px; right:22px; opacity:.7; }
+.score-chip b { font-size:15px; }
+.is-idle .combo-panel { top:138px; }
+.is-idle .score-chip { top:250px; }
+.pop-dmg { font-size:14px; -webkit-text-stroke:2px #17141e; }
+.pop-dmg.is-crit { font-size:18px; }
+.pop-sfx { font-size:30px; -webkit-text-stroke:3px #17141e; filter:drop-shadow(2px 2px 0 #17141e); }
+.pop-sfx small { font-size:10px; -webkit-text-stroke:2px #17141e; }
+.pop-score { font-size:14px; -webkit-text-stroke:2px #17141e; top:calc(50% + 34px) !important; }
+.overheat-banner { top:calc(50% + 36px); padding:2px 9px; }
+.overheat-banner span { font-size:11px; }
+.overheat-banner small { display:none; }
+.discovery-toast { top:70px; padding:6px 16px 7px; }
+.discovery-toast b { font-size:14px; }
+.liftoff-card span,.liftoff-card b { font-size:34px; }
+/* Multi-kill: a slim ink slash instead of a full-width panel. */
+.cut-in { place-items:start center; padding-top:13vh; }
+.cut-in-panel { width:auto; padding:5px 26px 6px; grid-auto-flow:column; align-items:baseline; gap:10px; box-shadow:0 3px 0 #ffd23f, 0 -3px 0 #ff3b8a; }
+.cut-in-panel span { font-size:22px; }
+.cut-in-panel b { font-size:13px; letter-spacing:.2em; }
+.cut-in-panel small { display:none; }
+@media (max-width:760px) { .is-flying .speed strong { font-size:32px; } .is-flying .explore-map { width:120px; } }

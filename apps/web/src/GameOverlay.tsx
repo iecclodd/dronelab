@@ -3,6 +3,7 @@ import { ArrowUpRight, Camera, Crosshair, Gamepad2, MapPin, Pause, Play, RotateC
 import type { ControllerId, PhysicalState, Scenario } from "../../../packages/contracts";
 import { FREE_WORLD } from "../../../packages/contracts/free-world";
 import { PIZZERIA_WORLD } from "../../../packages/contracts/pizzeria-world";
+import { CITY_WORLD } from "../../../packages/contracts/city-world";
 import type { CameraMode } from "./Scene";
 import type { FlightLook } from "./flight-controls";
 import { navMarker, navStore } from "./nav-store";
@@ -80,13 +81,13 @@ type Props = {
   onSetup: () => void;
   onController: (mode: "manual" | "rate") => void;
   onCamera: (camera: CameraMode) => void;
-  onWorldChange: (map: "valley" | "pizzeria") => void;
+  onWorldChange: (map: "valley" | "pizzeria" | "city") => void;
 };
 
 const fmt = (value: number, digits = 0) => Number.isFinite(value) ? value.toFixed(digits) : "0";
 export function GameOverlay(p: Props) {
-  const worldId = p.scenario?.mapId === "pizzeria" ? "pizzeria" : "valley";
-  const world = worldId === "pizzeria" ? PIZZERIA_WORLD : FREE_WORLD;
+  const worldId = p.scenario?.mapId ?? "valley";
+  const world = worldId === "pizzeria" ? PIZZERIA_WORLD : worldId === "city" ? CITY_WORLD : FREE_WORLD;
   const free = p.scenario?.id === "free";
   const position = p.flight?.position ?? [0, 0, 0];
   const speed = Math.hypot(...(p.flight?.velocity ?? [0, 0, 0])) * 3.6;
@@ -160,18 +161,19 @@ export function GameOverlay(p: Props) {
   const cruise = worldId === "pizzeria" && free ? 36 : 65;
   const segments = 24;
   const lit = Math.round(Math.min(1, speed / topSpeed) * segments);
-  return <div className={`game-overlay ${active ? "is-flying" : "is-idle"} ${free ? "is-arcade" : ""}`}>
+  return <div className={`game-overlay ${active ? "is-flying" : "is-idle"} ${free ? "is-arcade" : ""} ${p.locked ? "is-locked" : ""}`}>
     {p.effectsEnabled && active && speed > 55 && <svg className="speed-lines" viewBox="0 0 1000 700" preserveAspectRatio="none" aria-hidden="true" style={{opacity: Math.min(.85, (speed - 55) / 70)}}>
       {focusLines(46, boil, 0.62 - Math.min(0.14, (speed - 55) / 500))}
     </svg>}
     {free && <CombatHud effectsEnabled={!!p.effectsEnabled} showCrosshair={p.camera !== "Orbit"} />}
     <div className="world-heading" key={`${worldId}-${free}`}>
-      <div className="live-tag"><i /> {free ? "FREE FLIGHT" : "PRACTICE"} <span>/</span> {worldId === "pizzeria" && free ? "AFTER HOURS" : "GOLDEN HOUR"}</div>
+      <div className="live-tag"><i /> {free ? "FREE FLIGHT" : "PRACTICE"} <span>/</span> {!free ? "GOLDEN HOUR" : worldId === "pizzeria" ? "AFTER HOURS" : worldId === "city" ? "HOLLOW ZONE" : "GOLDEN HOUR"}</div>
       <h1>{free ? world.name : p.scenario?.name ?? "Loading flight deck"}<span>↗</span></h1>
-      <p>{free ? (worldId === "pizzeria" ? "A little after-hours exploration." : "Find your line.") : p.scenario?.description}</p>
+      <p>{free ? (worldId === "pizzeria" ? "A little after-hours exploration." : worldId === "city" ? "The city fell into the Hollow. Clear the Ethereals." : "Find your line.") : p.scenario?.description}</p>
       <div className="world-switch" aria-label="Choose a world">
         <button disabled={p.busy} className={free && worldId === "valley" ? "selected" : ""} onClick={() => p.onWorldChange("valley")}>01 <span>Aster Valley</span></button>
         <button disabled={p.busy} className={free && worldId === "pizzeria" ? "selected" : ""} onClick={() => p.onWorldChange("pizzeria")}>02 <span>Freddy’s Pizzeria</span></button>
+        <button disabled={p.busy} className={free && worldId === "city" ? "selected" : ""} onClick={() => p.onWorldChange("city")}>03 <span>Lumina District</span></button>
       </div>
     </div>
 

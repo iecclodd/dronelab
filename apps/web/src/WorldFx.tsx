@@ -253,7 +253,7 @@ function beaconBase(world: FreeWorldDefinition, [x, y, z]: V3) {
  * with the chosen next spot pulsing. Also projects that landmark to screen
  * space for the HUD marker. Non-colliding, visual only.
  */
-export function LandmarkBeacons({ world, worldId, height, radius, state }: { world: FreeWorldDefinition; worldId: "valley" | "pizzeria"; height: (base: number) => number; radius: number; state: MutableRefObject<PhysicalState | undefined> }) {
+export function LandmarkBeacons({ world, worldId, height, radius, state }: { world: FreeWorldDefinition; worldId: "valley" | "pizzeria" | "city"; height: (base: number) => number; radius: number; state: MutableRefObject<PhysicalState | undefined> }) {
   const nav = useSyncExternalStore(navStore.subscribe, navStore.get);
   const sameWorld = nav.worldId === worldId;
   const bases = useMemo(() => world.landmarks.map((l) => {

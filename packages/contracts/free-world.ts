@@ -1,6 +1,6 @@
 import type { Obstacle, V3 } from "./index.ts";
 
-export type FreeWorldMapId = "valley" | "pizzeria";
+export type FreeWorldMapId = "valley" | "pizzeria" | "city";
 
 /**
  * A data-only flight map. Obstacles are the source of truth for both the

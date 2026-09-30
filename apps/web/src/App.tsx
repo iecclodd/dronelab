@@ -447,7 +447,7 @@ export default function App() {
     flightControls.resetLook();
     void start({ config: { flightFeel: config.scenario === "free" ? "arcade" : "research" } }).catch(report);
   };
-  const changeWorld = (mapId: "valley" | "pizzeria") => {
+  const changeWorld = (mapId: "valley" | "pizzeria" | "city") => {
     flightControls.resetLook();
     setCamera("FPV");
     void reset({ ...config, scenario: "free", mapId, flightFeel: "arcade", maxSeconds: 120 }).catch(report);

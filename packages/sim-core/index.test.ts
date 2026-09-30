@@ -500,4 +500,19 @@ describe("DroneEnvironment", () => {
     expect(Math.hypot(...result.state.position.map((v, i) => v - env.scenario.targets[0][i]))).toBeLessThan(2);
     env.dispose();
   });
+
+  it("loads Lumina District with colliders that match its placements and a clear spawn", () => {
+    const env = new DroneEnvironment(config({ scenario: "free", mapId: "city", flightFeel: "arcade", maxSeconds: 10 }));
+    expect(env.scenario.obstacles.length).toBeGreaterThan(30);
+    const [sx, sy, sz] = env.scenario.spawn;
+    for (const o of env.scenario.obstacles) {
+      const inside = Math.abs(sx - o.position[0]) < o.size[0] / 2 && Math.abs(sy - o.position[1]) < o.size[1] / 2 && Math.abs(sz - o.position[2]) < o.size[2] / 2;
+      expect(inside, o.id).toBe(false);
+    }
+    let result = env.step({ kind: "nav", velocity: [20, 0, 0], yawRate: 0 }, 1);
+    for (let i = 0; i < 90; i++) result = env.step({ kind: "nav", velocity: [20, 0, 0], yawRate: 0 }, 1);
+    expect(result.state.terminated).toBe(false);
+    expect(result.state.position[0]).toBeGreaterThan(sx + 10);
+    env.dispose();
+  });
 });
