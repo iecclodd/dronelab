@@ -1,9 +1,10 @@
 import { useEffect, useMemo } from "react";
 import { Text } from "@react-three/drei";
+import * as THREE from "three";
 import type { Scenario, V3 } from "../../../packages/contracts";
 import { FREE_WORLD } from "../../../packages/contracts/free-world";
 import { WorldDetails } from "./WorldDetails";
-import { createAsphaltMap, createDryGrassMap } from "./world-materials";
+import { createAsphaltMap, createCelGradientMap, createDryGrassMap } from "./world-materials";
 
 const visual = ([x, y, z]: V3): [number, number, number] => [x, z, -y];
 const visualSize = ([x, y, z]: V3): [number, number, number] => [x, z, y];
@@ -18,11 +19,11 @@ function obstacleColor(id: string): string {
   return "#6f7465";
 }
 
-function MountainSilhouette({ position, scale }: { position: V3; scale: number }) {
+function MountainSilhouette({ position, scale, gradientMap }: { position: V3; scale: number; gradientMap: THREE.Texture }) {
   return (
     <mesh position={visual(position)} castShadow receiveShadow>
       <coneGeometry args={[scale * 0.56, scale, 7]} />
-      <meshStandardMaterial color="#586b73" roughness={1} />
+      <meshToonMaterial color="#52608a" gradientMap={gradientMap} />
     </mesh>
   );
 }
@@ -37,17 +38,17 @@ export function OpenWorld({ scenario }: { scenario?: Scenario }) {
     [],
   );
   const obstacles = scenario?.id === "free" ? scenario.obstacles : FREE_WORLD.obstacles;
-  const [grassMap, asphaltMap] = useMemo(() => [createDryGrassMap(), createAsphaltMap()], []);
-  useEffect(() => () => { grassMap.dispose(); asphaltMap.dispose(); }, [grassMap, asphaltMap]);
+  const [grassMap, asphaltMap, gradientMap] = useMemo(() => [createDryGrassMap(), createAsphaltMap(), createCelGradientMap()], []);
+  useEffect(() => () => { grassMap.dispose(); asphaltMap.dispose(); gradientMap.dispose(); }, [grassMap, asphaltMap, gradientMap]);
 
   return (
     <>
-      <color attach="background" args={["#8bb9c7"]} />
-      <fog attach="fog" args={["#a0c4c9", 105, 370]} />
-      <hemisphereLight args={["#fff0c9", "#466461", 1.65]} />
+      <color attach="background" args={["#77b7c8"]} />
+      <fog attach="fog" args={["#9dd2dc", 105, 370]} />
+      <hemisphereLight args={["#ffedbd", "#50477e", 1.45]} />
       <directionalLight
         position={[-115, 145, 80]}
-        intensity={2.75}
+        intensity={3.15}
         castShadow
         shadow-mapSize={[1024, 1024]}
         shadow-camera-left={-155}
@@ -56,15 +57,15 @@ export function OpenWorld({ scenario }: { scenario?: Scenario }) {
         shadow-camera-bottom={-155}
         shadow-bias={-0.00035}
       />
-      <directionalLight position={[92, 42, -105]} intensity={0.4} color="#92c7de" />
+      <directionalLight position={[92, 42, -105]} intensity={0.55} color="#8273bd" />
 
       <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
         <planeGeometry args={[FREE_WORLD.bounds * 2, FREE_WORLD.bounds * 2]} />
-        <meshStandardMaterial map={grassMap} color="#97a970" roughness={1} />
+        <meshToonMaterial map={grassMap} gradientMap={gradientMap} color="#a9d16a" />
       </mesh>
       <mesh position={[0, 0.012, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
         <planeGeometry args={[166, 18]} />
-        <meshStandardMaterial map={asphaltMap} color="#8a8668" roughness={0.94} />
+        <meshToonMaterial map={asphaltMap} gradientMap={gradientMap} color="#d2c57c" />
       </mesh>
       {runwayDashes.map((x) => (
         <mesh key={x} position={[x, 0.024, 0]} rotation={[-Math.PI / 2, 0, 0]}>
@@ -85,10 +86,9 @@ export function OpenWorld({ scenario }: { scenario?: Scenario }) {
           receiveShadow
         >
           <boxGeometry args={visualSize(obstacle.size)} />
-          <meshStandardMaterial
+          <meshToonMaterial
             color={obstacleColor(obstacle.id)}
-            roughness={obstacle.id.startsWith("yard") ? 0.48 : 0.86}
-            metalness={obstacle.id.startsWith("yard") ? 0.18 : 0}
+            gradientMap={gradientMap}
           />
         </mesh>
       ))}
@@ -114,10 +114,10 @@ export function OpenWorld({ scenario }: { scenario?: Scenario }) {
       ))}
 
       {/* Decorative mountains stay beyond the 200 m flight boundary. */}
-      <MountainSilhouette position={[255, 22, 42]} scale={88} />
-      <MountainSilhouette position={[238, -82, 32]} scale={70} />
-      <MountainSilhouette position={[-242, 84, 38]} scale={80} />
-      <MountainSilhouette position={[36, 255, 35]} scale={76} />
+      <MountainSilhouette position={[255, 22, 42]} scale={88} gradientMap={gradientMap} />
+      <MountainSilhouette position={[238, -82, 32]} scale={70} gradientMap={gradientMap} />
+      <MountainSilhouette position={[-242, 84, 38]} scale={80} gradientMap={gradientMap} />
+      <MountainSilhouette position={[36, 255, 35]} scale={76} gradientMap={gradientMap} />
       <WorldDetails />
     </>
   );

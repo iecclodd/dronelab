@@ -2,6 +2,7 @@ import type { Obstacle, V3 } from "../../../packages/contracts";
 import { FREE_WORLD } from "../../../packages/contracts/free-world";
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
+import { Edges } from "@react-three/drei";
 import { createAsphaltMap, createBrushedMetalMap } from "./world-materials";
 
 const visual = ([x, y, z]: V3): [number, number, number] => [x, z, -y];
@@ -62,6 +63,7 @@ function HangarFront() {
       <mesh position={visual([x, face, z])} rotation={[0, Math.PI, 0]}>
         <planeGeometry args={[width * 0.86, height * 0.76]} />
         <meshStandardMaterial color="#344b4a" roughness={0.68} />
+        <Edges color="#20213f" threshold={15} />
       </mesh>
       {[-width * 0.21, width * 0.21].map((offset) => (
         <mesh

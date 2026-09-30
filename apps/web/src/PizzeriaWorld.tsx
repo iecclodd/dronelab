@@ -1,15 +1,16 @@
-import { Text } from "@react-three/drei";
+import { Edges, Text } from "@react-three/drei";
 import { useEffect, useMemo } from "react";
+import * as THREE from "three";
 import type { Obstacle, Scenario, V3 } from "../../../packages/contracts/index.ts";
 import { PIZZERIA_WORLD } from "../../../packages/contracts/pizzeria-world.ts";
 import { FreddyModel } from "./FreddyModel.tsx";
-import { createWornCheckerMap } from "./world-materials";
+import { createCelGradientMap, createWornCheckerMap } from "./world-materials";
 
 const font = `${import.meta.env.BASE_URL}fonts/IBMPlexMono-Regular.woff`;
 const enu = ([x, y, z]: V3): [number, number, number] => [x, z, -y];
 const dimensions = ([x, y, z]: V3): [number, number, number] => [x, z, y];
 
-function Solid({ id, position, size }: { id: string; position: V3; size: V3 }) {
+function Solid({ id, position, size, gradientMap }: { id: string; position: V3; size: V3; gradientMap: THREE.Texture }) {
   const outerWall = id.startsWith("wall-");
   const office = id.startsWith("office-") || id.startsWith("backstage-");
   const arcade = id.startsWith("arcade-");
@@ -18,25 +19,24 @@ function Solid({ id, position, size }: { id: string; position: V3; size: V3 }) {
   return (
     <mesh position={enu(position)} castShadow receiveShadow>
       <boxGeometry args={dimensions(size)} />
-      <meshStandardMaterial
+      <meshToonMaterial
         color={
           outerWall ? "#34234d" : stage ? "#6d2540" : arcade ? "#192d4a" : table ? "#824331" : office ? "#2a3244" : "#664232"
         }
-        roughness={outerWall ? 0.92 : 0.72}
-        metalness={arcade ? 0.24 : 0}
+        gradientMap={gradientMap}
       />
     </mesh>
   );
 }
 
-function CheckerFloor() {
+function CheckerFloor({ gradientMap }: { gradientMap: THREE.Texture }) {
   const checker = useMemo(createWornCheckerMap, []);
   useEffect(() => () => checker.dispose(), [checker]);
   return (
     <group>
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.005, 0]} receiveShadow>
         <planeGeometry args={[44, 36]} />
-        <meshStandardMaterial map={checker} roughness={0.84} />
+        <meshToonMaterial map={checker} gradientMap={gradientMap} color="#f2dbb6" />
       </mesh>
     </group>
   );
@@ -97,7 +97,7 @@ function Ceiling() {
 function Stage() {
   return (
     <group>
-      <mesh position={[20.25, 3.2, 0]}><boxGeometry args={[0.08, 4.9, 11.8]} /><meshStandardMaterial color="#25152f" roughness={0.86} /></mesh>
+      <mesh position={[20.25, 3.2, 0]}><boxGeometry args={[0.08, 4.9, 11.8]} /><meshToonMaterial color="#36224f" /><Edges color="#120f2a" threshold={15} /></mesh>
       {/* Fabric curtains sit against the collidable stage backdrop and platform. */}
       {[-4.9, 4.9].map((z) => <group key={z} position={[18.4, 3.1, z]}>
         <mesh><boxGeometry args={[4.1, 4.6, 0.48]} /><meshStandardMaterial color="#6e183a" roughness={0.92} /></mesh>
@@ -123,19 +123,21 @@ export function PizzeriaWorld({ scenario }: { scenario?: Scenario }) {
   const solids = (scenario?.obstacles ?? PIZZERIA_WORLD.obstacles).filter(
     ({ id }) => !id.startsWith("freddy-") && !id.startsWith("table-"),
   );
+  const gradientMap = useMemo(createCelGradientMap, []);
+  useEffect(() => () => gradientMap.dispose(), [gradientMap]);
   return (
     <>
       <color attach="background" args={["#090d1b"]} />
       <fog attach="fog" args={["#10142a", 18, 62]} />
-      <ambientLight intensity={0.52} color="#b8b4d5" />
-      <hemisphereLight args={["#4c4d72", "#161526", 0.7]} />
-      <directionalLight position={[-12, 15, 8]} intensity={1.3} color="#bdcdea" castShadow shadow-mapSize={[1024, 1024]} shadow-camera-left={-28} shadow-camera-right={28} shadow-camera-top={25} shadow-camera-bottom={-25} shadow-bias={-0.0004} />
+      <ambientLight intensity={0.34} color="#766aa8" />
+      <hemisphereLight args={["#51487c", "#111022", 0.62]} />
+      <directionalLight position={[-12, 15, 8]} intensity={1.75} color="#ffe2a4" castShadow shadow-mapSize={[1024, 1024]} shadow-camera-left={-28} shadow-camera-right={28} shadow-camera-top={25} shadow-camera-bottom={-25} shadow-bias={-0.0004} />
       <pointLight position={[15, 4.4, 0]} intensity={20} distance={19} decay={2} color="#ffb95a" />
       <pointLight position={[1, 3.6, -13]} intensity={7} distance={13} decay={2} color="#55bfd4" />
       <pointLight position={[-12, 3.1, 6]} intensity={5} distance={11} decay={2} color="#7868c5" />
-      <CheckerFloor />
+      <CheckerFloor gradientMap={gradientMap} />
       <Ceiling />
-      {solids.map((solid: Obstacle) => <Solid key={solid.id} {...solid} />)}
+      {solids.map((solid: Obstacle) => <Solid key={solid.id} {...solid} gradientMap={gradientMap} />)}
       <WallBands />
       <Stage />
       <PartyTable position={[3, 0, -5.2]} palette={["#f66c86", "#ffcf62", "#62d9d4"]} />

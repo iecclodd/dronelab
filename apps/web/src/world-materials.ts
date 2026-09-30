@@ -23,19 +23,18 @@ const hash = (x: number, y: number) => ((x * 37 + y * 57 + x * y * 11) % 29) / 2
 
 export function createDryGrassMap() {
   return texture(64, (x, y, s) => {
-    const n = hash(x, y) * 20;
+    const hatch = (x + y * 2) % 13 < 2 || (x * 2 - y) % 19 < 2;
     const track = Math.abs((y / s) * 12 - Math.round((y / s) * 12)) < 0.018;
-    return track ? [110, 123, 80] : [119 + n, 139 + n * 0.55, 87 + n * 0.22];
+    return track ? [79, 105, 85] : hatch ? [88, 126, 102] : [139, 169, 103];
   }, [42, 42]);
 }
 
 export function createAsphaltMap() {
   return texture(64, (x, y, s) => {
-    const n = hash(x, y) * 18;
     const seam = x % 31 === 0 || y % 31 === 0;
     const tire = Math.abs(y - s / 2) < 3 || Math.abs(y - s / 2) > s / 2 - 4;
-    const base = seam ? 80 : tire ? 91 : 105;
-    return [base + n, base + n * 0.92, base * 0.72 + n * 0.5];
+    const hatch = (x * 2 + y) % 17 < 2;
+    return seam ? [63, 69, 88] : tire ? [85, 91, 103] : hatch ? [103, 111, 116] : [128, 132, 124];
   }, [9, 2]);
 }
 
@@ -57,4 +56,20 @@ export function createBrushedMetalMap() {
     const line = y % 9 === 0 ? -18 : 0;
     return [73 + n + line, 93 + n + line, 96 + n + line];
   }, [3, 3]);
+}
+
+/** Four deliberately stepped shades shared by every world MeshToonMaterial. */
+export function createCelGradientMap() {
+  const data = new Uint8Array([
+    44, 34, 88, 255,
+    78, 70, 141, 255,
+    171, 150, 205, 255,
+    255, 239, 181, 255,
+  ]);
+  const map = new THREE.DataTexture(data, 4, 1, THREE.RGBAFormat);
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.magFilter = THREE.NearestFilter;
+  map.minFilter = THREE.NearestFilter;
+  map.needsUpdate = true;
+  return map;
 }
