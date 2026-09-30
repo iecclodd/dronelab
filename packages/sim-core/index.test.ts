@@ -1,7 +1,9 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { DT, features, type SimConfig } from "../contracts/index.ts";
+import { FREE_WORLD } from "../contracts/free-world.ts";
 import {
   DroneEnvironment,
+  createFreeScenario,
   enuToThreePosition,
   enuToThreeQuaternion,
   initPhysics,
@@ -312,6 +314,53 @@ describe("DroneEnvironment", () => {
     expect(result.state.reason).toBe("timeout");
     expect(result.state.time).toBe(20);
     expect(result.state.terminated).toBe(false);
+    env.dispose();
+  });
+
+  it("builds Aster Valley from the shared spawn, bounds, and obstacle boxes", () => {
+    const scenario = createFreeScenario(FREE_WORLD);
+    expect(scenario.spawn).toEqual([0, 0, 2]);
+    expect(scenario.obstacles).toBe(FREE_WORLD.obstacles);
+    expect(FREE_WORLD.bounds).toBe(200);
+    expect(FREE_WORLD.ceiling).toBe(100);
+    expect(scenario.obstacles.every((o) => o.size.every((v) => v > 0))).toBe(
+      true,
+    );
+  });
+
+  it("uses Aster Valley's documented horizontal and altitude limits", () => {
+    const env = new DroneEnvironment(config({ scenario: "free" }));
+    const drone = (env as any).drone;
+    drone.setTranslation({ x: 201, y: 0, z: 10 }, true);
+    expect(
+      env.step({ kind: "rate", rates: [0, 0, 0], thrust: 0.42 }, 1).state
+        .reason,
+    ).toBe("out_of_bounds");
+    env.dispose();
+
+    const ceiling = new DroneEnvironment(config({ scenario: "free" }));
+    const ceilingDrone = (ceiling as any).drone;
+    ceilingDrone.setTranslation({ x: 0, y: 0, z: 101 }, true);
+    expect(
+      ceiling.step({ kind: "rate", rates: [0, 0, 0], thrust: 0.42 }, 1).state
+        .reason,
+    ).toBe("out_of_bounds");
+    ceiling.dispose();
+  });
+
+  it("turns each shared Aster Valley structure into a physical collision box", () => {
+    const env = new DroneEnvironment(config({ scenario: "free" }));
+    const hangar = FREE_WORLD.obstacles.find((o) => o.id === "home-hangar");
+    expect(hangar).toBeDefined();
+    const drone = (env as any).drone;
+    drone.setTranslation(
+      { x: hangar!.position[0], y: hangar!.position[1], z: hangar!.position[2] },
+      true,
+    );
+    drone.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    const hit = env.step({ kind: "rate", rates: [0, 0, 0], thrust: 0.42 }, 2);
+    expect(hit.state.reason).toBe("collision");
+    expect(hit.state.collisions).toBe(1);
     env.dispose();
   });
 });

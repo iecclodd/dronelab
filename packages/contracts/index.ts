@@ -20,6 +20,8 @@ export const ZERO_ACTION: Action = {
 };
 export interface SimConfig {
   scenario: ScenarioId;
+  /** Free-flight map selection. Omitted configurations use Aster Valley. */
+  mapId?: "valley" | "pizzeria";
   seed: number;
   wind: V3;
   noise: number;
@@ -44,6 +46,8 @@ export interface Obstacle {
 }
 export interface Scenario {
   id: ScenarioId;
+  /** Free-flight map selection, preserved in snapshots and consumed by the UI. */
+  mapId?: "valley" | "pizzeria";
   name: string;
   description: string;
   spawn: V3;
@@ -223,6 +227,7 @@ export function validateConfig(value: unknown): SimConfig {
   if (
     !c ||
     !["hover", "gates", "landing", "free"].includes(c.scenario) ||
+    (c.mapId !== undefined && !["valley", "pizzeria"].includes(c.mapId)) ||
     !Number.isInteger(c.seed) ||
     c.seed < 0 ||
     c.seed > 0xffffffff

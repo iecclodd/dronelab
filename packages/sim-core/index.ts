@@ -20,6 +20,11 @@ import {
   type Transition,
   type V3,
 } from "../contracts/index.ts";
+import {
+  FREE_WORLD,
+  type FreeWorldDefinition,
+  type FreeWorldMapId,
+} from "../contracts/free-world.ts";
 
 export type Vec3 = V3;
 type Quat = [number, number, number, number];
@@ -79,6 +84,37 @@ class Rng {
   }
 }
 
+/**
+ * Registry seam for additional free-flight maps. The pizzeria map is added by
+ * its owner during integration; the simulator and renderer always consume the
+ * same obstacle boxes from the selected definition.
+ */
+export const FREE_WORLD_MAPS: Partial<
+  Record<FreeWorldMapId, FreeWorldDefinition>
+> = { valley: FREE_WORLD };
+
+export function freeWorldForMap(
+  mapId: FreeWorldMapId | undefined,
+): FreeWorldDefinition {
+  return FREE_WORLD_MAPS[mapId ?? "valley"] ?? FREE_WORLD;
+}
+
+export function createFreeScenario(
+  world: FreeWorldDefinition,
+  mapId: FreeWorldMapId = "valley",
+): Scenario {
+  return {
+    id: "free",
+    mapId,
+    name: world.name,
+    description: `Explore ${world.name} inside its documented flight bounds.`,
+    spawn: [...world.spawn] as V3,
+    targets: [[70, 0, 8]],
+    pad: [0, 0, 0],
+    obstacles: world.obstacles,
+  };
+}
+
 function scenarioFor(config: SimConfig, rng: Rng): Scenario {
   const jitter = (): number => rng.signed() * 0.25;
   if (config.scenario === "gates")
@@ -113,15 +149,10 @@ function scenarioFor(config: SimConfig, rng: Rng): Scenario {
       obstacles: [],
     };
   if (config.scenario === "free")
-    return {
-      id: "free",
-      name: "Free flight",
-      description: "Fly freely inside the test range.",
-      spawn: [jitter(), jitter(), 1.5],
-      targets: [[0, 8, 2]],
-      pad: [0, 0, 0],
-      obstacles: [],
-    };
+    return createFreeScenario(
+      freeWorldForMap(config.mapId),
+      config.mapId ?? "valley",
+    );
   return {
     id: "hover",
     name: "Hover target",
@@ -292,14 +323,24 @@ export class DroneEnvironment {
     this.buildWorld();
     this.initialized = true;
   }
+  private freeWorld(): FreeWorldDefinition | undefined {
+    return this.config.scenario === "free"
+      ? freeWorldForMap(this.config.mapId)
+      : undefined;
+  }
   private buildWorld(): void {
     this.world?.free();
     this.world = new RAPIER.World({ x: 0, y: 0, z: -9.81 });
     const ground = this.world.createRigidBody(
       RAPIER.RigidBodyDesc.fixed().setTranslation(0, 0, -0.15),
     );
+    const groundHalfExtent = this.freeWorld()?.bounds ?? 30;
     const groundCollider = this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(30, 30, 0.15).setFriction(0.9),
+      RAPIER.ColliderDesc.cuboid(
+        groundHalfExtent,
+        groundHalfExtent,
+        0.15,
+      ).setFriction(0.9),
       ground,
     );
     this.contactTags.set(groundCollider.handle, "ground");
@@ -653,10 +694,14 @@ export class DroneEnvironment {
       this.terminated = true;
       this.reason = "collision";
     }
-    const outOfBounds =
-      Math.abs(next.position[0]) > ARENA_HALF_EXTENT ||
-      Math.abs(next.position[1]) > ARENA_HALF_EXTENT ||
-      next.position[2] > ARENA_HALF_EXTENT;
+    const freeWorld = this.freeWorld();
+    const outOfBounds = freeWorld
+      ? Math.abs(next.position[0]) > freeWorld.bounds ||
+        Math.abs(next.position[1]) > freeWorld.bounds ||
+        next.position[2] > freeWorld.ceiling
+      : Math.abs(next.position[0]) > ARENA_HALF_EXTENT ||
+        Math.abs(next.position[1]) > ARENA_HALF_EXTENT ||
+        next.position[2] > ARENA_HALF_EXTENT;
     if (outOfBounds && !this.wasOutOfBounds) {
       this.collisions++;
       collision = -1;
