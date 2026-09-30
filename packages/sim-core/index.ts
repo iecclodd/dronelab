@@ -215,6 +215,8 @@ const ARENA_HALF_EXTENT = 25;
 const ARCADE_OUTDOOR_NAV_LIMIT = 30;
 const ARCADE_INDOOR_NAV_LIMIT = 16;
 const ARCADE_VELOCITY_LIMIT = 36;
+const ARCADE_BOUNCE_MIN_SPEED_MS = 2.25;
+const ARCADE_BOUNCE_COOLDOWN_TICKS = 30;
 
 function rotate(q: Quat, v: V3): V3 {
   const [x, y, z, w] = q;
@@ -303,6 +305,7 @@ export class DroneEnvironment {
   private lastDistance = 0;
   private settledTicks = 0;
   private previousPosition: V3 = [0, 0, 0];
+  private lastArcadeImpactTick = -Infinity;
   private initialized = false;
 
   constructor(config: SimConfig) {
@@ -451,6 +454,7 @@ export class DroneEnvironment {
       this.wasOutOfBounds =
         false;
     this.reason = "";
+    this.lastArcadeImpactTick = -Infinity;
     this.initialized = false;
     this.ensure();
     this.previousPosition = this.rawState().position;
@@ -694,23 +698,37 @@ export class DroneEnvironment {
     const onPad =
       this.padCollider !== undefined && contacts.has(this.padCollider.handle);
     let collision = 0;
-    if (
-      tags.some(
-        (tag) =>
-          tag === "obstacle" ||
-          (tag === "ground" && this.config.scenario !== "landing"),
-      )
-    ) {
+    const hitObstacle = tags.some((tag) => tag === "obstacle");
+    const hitGround = tags.some((tag) => tag === "ground");
+    const impactSpeed = length(s.velocity);
+    const energeticArcadeImpact =
+      (hitObstacle && impactSpeed >= ARCADE_BOUNCE_MIN_SPEED_MS) ||
+      (hitGround && s.velocity[2] <= -ARCADE_BOUNCE_MIN_SPEED_MS);
+    const arcadeImpactReady =
+      this.tick - this.lastArcadeImpactTick >= ARCADE_BOUNCE_COOLDOWN_TICKS;
+    const collisionContact =
+      hitObstacle || (hitGround && this.config.scenario !== "landing");
+    const crash = this.arcadeFreeFlight()
+      ? energeticArcadeImpact && arcadeImpactReady
+      : collisionContact;
+    if (crash) {
       this.collisions++;
       collision = -1;
       if (this.arcadeFreeFlight()) {
-        // Rapier resolves penetration and restitution handles the surface
-        // normal. Add a bounded upward kick so a free-flight crash is fun and
-        // recoverable instead of sticking to furniture or the ground.
-        const rebound = clampV(
-          [-s.velocity[0] * 0.38, -s.velocity[1] * 0.38, Math.max(2.5, Math.abs(s.velocity[2]) * 0.5)],
-          15,
-        );
+        this.lastArcadeImpactTick = this.tick;
+        // The wall kick is intentionally playful. Ground rebounds only retain
+        // a fraction of the incoming vertical speed, so a zero-thrust drone
+        // settles instead of receiving a perpetual minimum upward launch.
+        const rebound = hitGround && !hitObstacle
+          ? [s.velocity[0] * 0.7, s.velocity[1] * 0.7, Math.abs(s.velocity[2]) * 0.45] as V3
+          : clampV(
+              [
+                -s.velocity[0] * 0.38,
+                -s.velocity[1] * 0.38,
+                Math.max(1.5, Math.abs(s.velocity[2]) * 0.45, impactSpeed * 0.18),
+              ],
+              15,
+            );
         this.drone.setLinvel(
           { x: rebound[0], y: rebound[1], z: rebound[2] },
           true,
@@ -956,6 +974,7 @@ export class DroneEnvironment {
       yaw: this.yaw,
       lastDistance: this.lastDistance,
       settledTicks: this.settledTicks,
+      lastArcadeImpactTick: this.lastArcadeImpactTick,
     };
   }
   restore(snapshot: any): void {
@@ -997,6 +1016,7 @@ export class DroneEnvironment {
     this.yaw = snapshot.yaw;
     this.lastDistance = snapshot.lastDistance;
     this.settledTicks = snapshot.settledTicks;
+    this.lastArcadeImpactTick = snapshot.lastArcadeImpactTick ?? -Infinity;
   }
   stop(reason = "stopped"): void {
     this.stopped = true;

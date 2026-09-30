@@ -348,23 +348,48 @@ describe("DroneEnvironment", () => {
     arcade.dispose();
   });
 
-  it("counts an arcade free-flight impact once, bounces, and keeps flying", () => {
+  it("bounces an energetic arcade wall impact once and keeps flying", () => {
     const env = new DroneEnvironment(
       config({ scenario: "free", flightFeel: "arcade", maxSeconds: 10 }),
     );
     const hangar = FREE_WORLD.obstacles.find((o) => o.id === "home-hangar")!;
     const drone = (env as any).drone;
     drone.setTranslation(
-      { x: hangar.position[0], y: hangar.position[1], z: hangar.position[2] },
+      {
+        x: hangar.position[0] - hangar.size[0] / 2 - 0.4,
+        y: hangar.position[1],
+        z: hangar.position[2],
+      },
       true,
     );
-    drone.setLinvel({ x: 0, y: 0, z: 0 }, true);
-    const hit = env.step({ kind: "rate", rates: [0, 0, 0], thrust: 0.42 }, 2);
+    drone.setLinvel({ x: 18, y: 0, z: 0 }, true);
+    const hit = env.step({ kind: "rate", rates: [0, 0, 0], thrust: 0.42 }, 12);
     expect(hit.state.collisions).toBe(1);
     expect(hit.state.terminated).toBe(false);
     expect(hit.state.reason).toBe("");
+    expect(hit.state.velocity[0]).toBeLessThan(-0.5);
     expect(hit.state.velocity.every(Number.isFinite)).toBe(true);
     expect(Math.hypot(...hit.state.velocity)).toBeLessThanOrEqual(36.0001);
+    env.dispose();
+  });
+
+  it("settles a zero-thrust arcade drone on the ground without relaunching it", () => {
+    const env = new DroneEnvironment(
+      config({ scenario: "free", flightFeel: "arcade", maxSeconds: 10 }),
+    );
+    const drone = (env as any).drone;
+    drone.setTranslation({ x: 0, y: 0, z: 0.061 }, true);
+    drone.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    let maxAltitude = env.state().position[2];
+    let result = env.step({ kind: "rate", rates: [0, 0, 0], thrust: 0 }, 1);
+    for (let i = 0; i < 719; i++) {
+      result = env.step({ kind: "rate", rates: [0, 0, 0], thrust: 0 }, 1);
+      maxAltitude = Math.max(maxAltitude, result.state.position[2]);
+    }
+    expect(result.state.terminated).toBe(false);
+    expect(result.state.collisions).toBe(0);
+    expect(maxAltitude).toBeLessThan(0.12);
+    expect(Math.abs(result.state.velocity[2])).toBeLessThan(0.2);
     env.dispose();
   });
 
