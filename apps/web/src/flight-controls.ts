@@ -178,6 +178,7 @@ export function useFlightControls({
   const previousActive = useRef(false);
   const lockedRef = useRef(false);
   const draggingRef = useRef(false);
+  const intentionalCameraUnlock = useRef(false);
   const [locked, setLocked] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [throttle, setThrottle] = useState(HOVER_THRUST);
@@ -225,23 +226,19 @@ export function useFlightControls({
   const engageLook = useCallback(() => {
     const canvas = document.querySelector<HTMLCanvasElement>("#flight-stage canvas");
     if (!canvas || !lookEnabled) return;
-    const fallback = () => {
-      if (!lockedRef.current && lookEnabled) {
-        draggingRef.current = true;
-        setDragging(true);
-      }
-    };
     try {
       const request = canvas.requestPointerLock?.();
-      if (!request) {
-        if (!canvas.requestPointerLock) fallback();
-        return;
-      }
-      void request.catch(fallback);
+      void request?.catch(() => {
+        lockedRef.current = false;
+        setLocked(false);
+        releaseDrag();
+      });
     } catch {
-      fallback();
+      lockedRef.current = false;
+      setLocked(false);
+      releaseDrag();
     }
-  }, [lookEnabled]);
+  }, [lookEnabled, releaseDrag]);
 
   useEffect(() => {
     if (!enabled) {
@@ -253,8 +250,11 @@ export function useFlightControls({
   useEffect(() => {
     if (lookEnabled) return;
     releaseDrag();
-    if (lockedRef.current) document.exitPointerLock?.();
-  }, [lookEnabled, releaseDrag]);
+    if (lockedRef.current) {
+      if (cameraMode !== "FPV") intentionalCameraUnlock.current = true;
+      document.exitPointerLock?.();
+    }
+  }, [cameraMode, lookEnabled, releaseDrag]);
 
   useEffect(() => {
     if (controller === "rate") resetControls();
@@ -265,10 +265,12 @@ export function useFlightControls({
       const canvas = document.querySelector<HTMLCanvasElement>("#flight-stage canvas");
       const nextLocked = !!canvas && document.pointerLockElement === canvas;
       const wasLocked = lockedRef.current;
+      const intentional = intentionalCameraUnlock.current;
+      intentionalCameraUnlock.current = false;
       lockedRef.current = nextLocked;
       setLocked(nextLocked);
       if (nextLocked) releaseDrag();
-      if (wasLocked && !nextLocked) clearFlight(true);
+      if (wasLocked && !nextLocked && !intentional) clearFlight(true);
     };
     document.addEventListener("pointerlockchange", pointerLockChange);
     return () => document.removeEventListener("pointerlockchange", pointerLockChange);
