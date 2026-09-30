@@ -7,3 +7,5 @@
 * [Freddy Fazbear character overview (Popverse)](https://www.thepopverse.com/characters/freddy-fazbear) — consulted as a publisher character page; it was access-restricted in the reference browser.
 
 The resulting original design has blue irises and pupils, brows and lids, a tan muzzle with freckles, separate upper and lower block teeth around a dark mouth cavity, black hat/bow tie, broad feet, mechanical pivots/cuffs, and a fingered microphone grip. Its worn shell comes from a generated 8×8 `DataTexture`, with no external dependency.
+
+For the cel-shaded racing-game direction, the shared shell, metal, fabric, tooth, and eye materials use `MeshToonMaterial` with a generated four-band nearest-filtered gradient map. Four inverted-hull silhouette meshes are limited to the torso, head, and outer ears; facial cavities and mechanical seams supply the remaining graphic definition without turning each small component into another outline draw call.

@@ -18,27 +18,39 @@ export function FreddyModel() {
     fabricMap.wrapS = fabricMap.wrapT = THREE.RepeatWrapping;
     fabricMap.repeat.set(3, 3);
     fabricMap.needsUpdate = true;
+    // Four nearest-filtered luminance stops give every lit surface a clean cel-shaded band.
+    const bands = new Uint8Array([
+      28, 28, 28, 92, 92, 92, 176, 176, 176, 255, 255, 255,
+    ]);
+    const gradientMap = new THREE.DataTexture(bands, 4, 1, THREE.RGBFormat);
+    gradientMap.minFilter = THREE.NearestFilter;
+    gradientMap.magFilter = THREE.NearestFilter;
+    gradientMap.needsUpdate = true;
     return {
-      fur: new THREE.MeshStandardMaterial({ color: "#8b542f", map: fabricMap, roughness: 0.86 }),
-      tan: new THREE.MeshStandardMaterial({ color: "#d19a68", roughness: 0.92 }),
-      dark: new THREE.MeshStandardMaterial({ color: "#151419", roughness: 0.42 }),
-      cavity: new THREE.MeshStandardMaterial({ color: "#110d0d", roughness: 0.98 }),
-      metal: new THREE.MeshStandardMaterial({ color: "#9da8aa", metalness: 0.88, roughness: 0.25 }),
-      brass: new THREE.MeshStandardMaterial({ color: "#b89754", metalness: 0.72, roughness: 0.3 }),
-      tooth: new THREE.MeshStandardMaterial({ color: "#eee2c3", roughness: 0.58 }),
-      blue: new THREE.MeshStandardMaterial({ color: "#4f9dd3", emissive: "#153149", emissiveIntensity: 0.3, roughness: 0.32 }),
+      fur: new THREE.MeshToonMaterial({ color: "#8b542f", map: fabricMap, gradientMap }),
+      tan: new THREE.MeshToonMaterial({ color: "#d19a68", gradientMap }),
+      dark: new THREE.MeshToonMaterial({ color: "#151419", gradientMap }),
+      cavity: new THREE.MeshToonMaterial({ color: "#110d0d", gradientMap }),
+      metal: new THREE.MeshToonMaterial({ color: "#9da8aa", gradientMap }),
+      brass: new THREE.MeshToonMaterial({ color: "#b89754", gradientMap }),
+      tooth: new THREE.MeshToonMaterial({ color: "#eee2c3", gradientMap }),
+      blue: new THREE.MeshToonMaterial({ color: "#4f9dd3", emissive: "#153149", emissiveIntensity: 0.3, gradientMap }),
       pupil: new THREE.MeshBasicMaterial({ color: "#080b0d" }),
+      outline: new THREE.MeshBasicMaterial({ color: "#160f14", side: THREE.BackSide }),
     };
   }, []);
   const teeth = [-0.33, 0, 0.33];
   return <group position={[16.8, 0.45, 0]} rotation={[0, -Math.PI / 2, 0]}>
+    <mesh position={[0, 1.88, 0]} scale={[1.045, 1.035, 1.045]} material={materials.outline}><capsuleGeometry args={[0.73, 1.05, 8, 16]} /></mesh>
     <mesh position={[0, 1.88, 0]} castShadow material={materials.fur}><capsuleGeometry args={[0.73, 1.05, 8, 16]} /></mesh>
     <mesh position={[0, 1.63, 0.68]} material={materials.tan}><sphereGeometry args={[0.53, 16, 12]} /></mesh>
     <mesh position={[0, 2.71, 0]} rotation={[Math.PI / 2, 0, 0]} material={materials.metal}><cylinderGeometry args={[0.31, 0.31, 0.15, 16]} /></mesh>
     <mesh position={[0, 2.71, 0.08]} rotation={[Math.PI / 2, 0, 0]} material={materials.dark}><torusGeometry args={[0.31, 0.06, 8, 16]} /></mesh>
 
+    <mesh position={[0, 3.65, 0]} scale={1.045} material={materials.outline}><sphereGeometry args={[1.0, 20, 16]} /></mesh>
     <mesh position={[0, 3.65, 0]} castShadow material={materials.fur}><sphereGeometry args={[1.0, 20, 16]} /></mesh>
     {([-0.63, 0.63] as number[]).map((x) => <group key={`ear-${x}`} position={[x, 4.37, -0.02]}>
+      <mesh scale={1.075} material={materials.outline}><sphereGeometry args={[0.39, 16, 12]} /></mesh>
       <mesh castShadow material={materials.fur}><sphereGeometry args={[0.39, 16, 12]} /></mesh>
       <mesh position={[0, 0, 0.29]} material={materials.tan}><sphereGeometry args={[0.22, 14, 10]} /></mesh>
       <mesh position={[0, 0, 0.38]} rotation={[0, 0, Math.PI / 2]} material={materials.dark}><torusGeometry args={[0.24, 0.035, 6, 12]} /></mesh>
