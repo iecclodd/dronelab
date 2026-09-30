@@ -24,9 +24,10 @@ export function FreddyModel() {
       <mesh position={[0, 1.58, 0.66]}><sphereGeometry args={[0.58, 16, 12]} /><meshStandardMaterial color={tan} roughness={0.8} /></mesh>
       <mesh position={[0, 3.55, 0]} castShadow><sphereGeometry args={[1.02, 20, 16]} /><meshStandardMaterial color={brown} roughness={0.68} /></mesh>
       <mesh position={[0, 3.32, 0.82]}><sphereGeometry args={[0.58, 16, 12]} /><meshStandardMaterial color={tan} roughness={0.8} /></mesh>
+      <mesh position={[0, 3.47, 1.34]} castShadow><sphereGeometry args={[0.18, 16, 12]} /><meshStandardMaterial color={black} roughness={0.42} /></mesh>
       {[[-0.48, 4.42], [0.48, 4.42]].map(([x, y]) => <mesh key={`${x}`} position={[x, y, 0]} castShadow><sphereGeometry args={[0.38, 16, 12]} /><meshStandardMaterial color={brown} roughness={0.7} /></mesh>)}
-      <mesh position={[0, 4.68, 0]} castShadow><cylinderGeometry args={[0.43, 0.43, 0.42, 16]} /><meshStandardMaterial color={black} roughness={0.45} /></mesh>
-      <mesh position={[0, 4.9, 0]} castShadow><cylinderGeometry args={[0.68, 0.68, 0.08, 16]} /><meshStandardMaterial color={black} roughness={0.45} /></mesh>
+      <mesh position={[0, 4.72, 0]} castShadow><cylinderGeometry args={[0.43, 0.43, 0.42, 16]} /><meshStandardMaterial color={black} roughness={0.45} /></mesh>
+      <mesh position={[0, 4.51, 0]} castShadow><cylinderGeometry args={[0.68, 0.68, 0.08, 16]} /><meshStandardMaterial color={black} roughness={0.45} /></mesh>
       {[[-0.3, 0.65], [0.3, 0.65]].map(([x, z]) => <group key={`${x}`} position={[x, 3.8, z]}><mesh><sphereGeometry args={[0.27, 16, 12]} /><meshStandardMaterial color="#f3eaba" emissive="#887a3d" emissiveIntensity={0.3} /></mesh><mesh position={[0, 0, 0.21]}><sphereGeometry args={[0.1, 12, 10]} /><meshBasicMaterial color="#0a1115" /></mesh></group>)}
       <group position={[0, 3.02, 0.95]}>{[-0.28, 0, 0.28].map((x) => <mesh key={x} position={[x, 0, 0]} rotation={[Math.PI, 0, 0]} geometry={toothGeometry}><meshStandardMaterial color="#f5e8ce" /></mesh>)}</group>
       <group position={[0, 2.16, 0.72]} rotation={[0, 0, Math.PI / 2]}><mesh><coneGeometry args={[0.45, 0.86, 3]} /><meshStandardMaterial color="#101015" /></mesh><mesh rotation={[0, 0, Math.PI]}><coneGeometry args={[0.45, 0.86, 3]} /><meshStandardMaterial color="#101015" /></mesh></group>

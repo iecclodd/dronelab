@@ -7,12 +7,26 @@ const box = (
   size: V3,
 ): Obstacle => ({ id, position, size, kind: "box" });
 
+/** The visible table is a thin top on four narrow legs, never a solid block. */
+const table = (id: string, [x, y]: [number, number]): Obstacle[] => [
+  box(`${id}-top`, [x, y, 0.72], [3.25, 2.2, 0.12]),
+  ...[-1.25, 1.25].flatMap((offsetX) =>
+    [-0.75, 0.75].map((offsetY) =>
+      box(
+        `${id}-leg-${offsetX}-${offsetY}`,
+        [x + offsetX, y + offsetY, 0.36],
+        [0.22, 0.22, 0.72],
+      ),
+    ),
+  ),
+];
+
 /**
  * A compact fan pizzeria in ENU coordinates.  Every item here represents a
  * visible solid in PizzeriaWorld so the physics and the FPV view agree.
  */
 export const PIZZERIA_WORLD: FreeWorldDefinition = {
-  name: "Fazbear Fan Pizzeria",
+  name: "Freddy’s Pizzeria",
   bounds: 25,
   ceiling: 6,
   spawn: [-15, 0, 1.45],
@@ -34,16 +48,16 @@ export const PIZZERIA_WORLD: FreeWorldDefinition = {
     // The raised stage and its three physical performers.
     box("stage-platform", [17, 0, 0.45], [7.5, 12, 0.9]),
     box("stage-backdrop", [20.5, 0, 3.1], [0.45, 12, 5.2]),
-    box("freddy-torso", [16.8, 0, 2.15], [1.7, 1.45, 2.35]),
-    box("freddy-head", [16.8, 0, 3.8], [1.9, 1.7, 1.65]),
-    box("freddy-left-arm", [16.8, 1.25, 2.15], [0.75, 0.65, 2.1]),
-    box("freddy-right-arm", [16.8, -1.25, 2.15], [0.75, 0.65, 2.1]),
+    box("freddy-torso", [16.8, 0, 1.72], [1.55, 1.5, 2.15]),
+    box("freddy-head", [16.8, 0, 3.62], [1.9, 1.8, 1.8]),
+    box("freddy-left-arm", [16.8, 1.05, 2.03], [0.7, 0.7, 1.75]),
+    box("freddy-right-arm", [16.8, -1.05, 2.03], [0.7, 0.7, 1.75]),
     // Dining furniture: the long central aisle remains clear and more than 2m wide.
-    box("table-nw", [3, 5.2, 0.72], [3.6, 2.5, 1.44]),
-    box("table-ne", [9, 5.2, 0.72], [3.6, 2.5, 1.44]),
-    box("table-sw", [3, -5.2, 0.72], [3.6, 2.5, 1.44]),
-    box("table-se", [9, -5.2, 0.72], [3.6, 2.5, 1.44]),
-    box("table-west", [-5, 0, 0.72], [3.3, 2.7, 1.44]),
+    ...table("table-nw", [3, 5.2]),
+    ...table("table-ne", [9, 5.2]),
+    ...table("table-sw", [3, -5.2]),
+    ...table("table-se", [9, -5.2]),
+    ...table("table-west", [-5, 5.2]),
     // Arcade cabinets hug the north wall, leaving a wide approach.
     box("arcade-1", [-1, 14.7, 1.45], [1.2, 0.85, 2.9]),
     box("arcade-2", [1.2, 14.7, 1.45], [1.2, 0.85, 2.9]),

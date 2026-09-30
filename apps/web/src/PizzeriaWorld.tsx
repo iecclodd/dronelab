@@ -1,5 +1,6 @@
 import { Text } from "@react-three/drei";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
+import * as THREE from "three";
 import type { Obstacle, Scenario, V3 } from "../../../packages/contracts/index.ts";
 import { PIZZERIA_WORLD } from "../../../packages/contracts/pizzeria-world.ts";
 import { FreddyModel } from "./FreddyModel.tsx";
@@ -29,21 +30,27 @@ function Solid({ id, position, size }: { id: string; position: V3; size: V3 }) {
 }
 
 function CheckerFloor() {
-  const tiles = useMemo(
-    () => Array.from({ length: 22 * 18 }, (_, i) => ({ x: (i % 22) * 2 - 21, y: Math.floor(i / 22) * 2 - 17 })),
-    [],
-  );
+  const checker = useMemo(() => {
+    const pixels = new Uint8Array([
+      27, 35, 52, 255, 215, 211, 190, 255,
+      215, 211, 190, 255, 27, 35, 52, 255,
+    ]);
+    const texture = new THREE.DataTexture(pixels, 2, 2, THREE.RGBAFormat);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.magFilter = THREE.NearestFilter;
+    texture.minFilter = THREE.NearestFilter;
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(11, 9);
+    texture.needsUpdate = true;
+    return texture;
+  }, []);
+  useEffect(() => () => checker.dispose(), [checker]);
   return (
     <group>
-      {tiles.map(({ x, y }) => (
-        <mesh key={`${x}-${y}`} position={[x, 0.005, -y]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-          <planeGeometry args={[2, 2]} />
-          <meshStandardMaterial color={(Math.round(x / 2) + Math.round(y / 2)) % 2 ? "#1b2334" : "#d7d3be"} roughness={0.84} />
-        </mesh>
-      ))}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.018, 0]} receiveShadow>
-        <planeGeometry args={[46, 40]} />
-        <meshStandardMaterial color="#23223c" roughness={1} />
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.005, 0]} receiveShadow>
+        <planeGeometry args={[44, 36]} />
+        <meshStandardMaterial map={checker} roughness={0.84} />
       </mesh>
     </group>
   );
@@ -105,6 +112,7 @@ function Stage() {
   return (
     <group>
       <mesh position={[20.25, 3.2, 0]}><boxGeometry args={[0.08, 4.9, 11.8]} /><meshStandardMaterial color="#25152f" roughness={0.86} /></mesh>
+      {/* Fabric curtains sit against the collidable stage backdrop and platform. */}
       {[-4.9, 4.9].map((z) => <mesh key={z} position={[18.4, 3.1, z]}><boxGeometry args={[4.1, 4.6, 0.48]} /><meshStandardMaterial color="#8d274b" roughness={0.78} /></mesh>)}
       <Text font={font} position={[13.18, 4.92, 0]} rotation={[0, -Math.PI / 2, 0]} fontSize={0.52} color="#f9d567" anchorX="center">FREDDY'S FAN STAGE</Text>
       <spotLight position={[12, 5.4, -5]} target-position={[16.5, 1, 0]} angle={0.38} penumbra={0.6} intensity={15} color="#ffca62" castShadow />
@@ -125,7 +133,9 @@ function ExitDoor() {
 }
 
 export function PizzeriaWorld({ scenario }: { scenario?: Scenario }) {
-  const solids = scenario?.obstacles ?? PIZZERIA_WORLD.obstacles;
+  const solids = (scenario?.obstacles ?? PIZZERIA_WORLD.obstacles).filter(
+    ({ id }) => !id.startsWith("freddy-") && !id.startsWith("table-"),
+  );
   return (
     <>
       <color attach="background" args={["#0c1021"]} />
@@ -141,7 +151,7 @@ export function PizzeriaWorld({ scenario }: { scenario?: Scenario }) {
       <PartyTable position={[9, 0, -5.2]} palette={["#8b7be7", "#ffcf62", "#ef6f95"]} />
       <PartyTable position={[3, 0, 5.2]} palette={["#6bd8a3", "#ffcf62", "#e96482"]} />
       <PartyTable position={[9, 0, 5.2]} palette={["#e96482", "#72cfe5", "#ffcf62"]} />
-      <PartyTable position={[-5, 0, 0]} palette={["#a07de4", "#ffcf62", "#75dfad"]} />
+      <PartyTable position={[-5, 0, -5.2]} palette={["#a07de4", "#ffcf62", "#75dfad"]} />
       <ArcadeFaces />
       <ExitDoor />
       <Text font={font} position={[-13, 4.7, -5.1]} rotation={[0, 0, 0]} fontSize={0.35} color="#bdb5ff" anchorX="center">SECURITY OFFICE</Text>
