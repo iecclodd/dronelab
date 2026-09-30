@@ -5,6 +5,10 @@ import * as THREE from "three";
 import type { Scenario } from "../../../packages/contracts";
 import { CITY_AVENUES, CITY_BOUNDS, CITY_MODEL_BOUNDS, CITY_PLACEMENTS, CITY_RUBBLE, CITY_STREETS, CITY_WORLD, placementBox, type CityPlacement } from "../../../packages/contracts/city-world";
 import { rimLight, stylizedTime } from "./cel-material";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { HIDDEN_LAYER, isSphereVisible, visibility, type Cullable } from "./visibility";
+import { qualitySnapshot, visualQuality } from "./toon-pipeline";
+import { useSyncExternalStore } from "react";
 import { createCelGradientMap } from "./world-materials";
 
 /**
@@ -64,28 +68,60 @@ function Buildings({ gradient }: { gradient: THREE.Texture }) {
     return object;
   }), [byName, gradient]);
   useEffect(() => () => groups.forEach((g) => g.traverse((c) => { const m = c as THREE.Mesh; if (m.isMesh) (m.material as THREE.Material).dispose(); })), [groups]);
+  // Towers are both occluders and cullables (occluded by *other* towers).
+  useEffect(() => {
+    const boxes = CITY_PLACEMENTS.map((p) => {
+      const b = placementBox(p);
+      return new THREE.Box3().setFromCenterAndSize(new THREE.Vector3(b.position[0], b.position[2], -b.position[1]), new THREE.Vector3(b.size[0], b.size[2], b.size[1]));
+    });
+    visibility.setOccluders(boxes);
+    const entries: Cullable[] = groups.map((g, i) => {
+      const box = boxes[i]!;
+      const size = box.getSize(new THREE.Vector3());
+      const centre = box.getCenter(new THREE.Vector3());
+      const half = size.clone().multiplyScalar(0.5);
+      // Sample the box's corners, mid-edges and centre so partly visible towers stay drawn.
+      const samples: THREE.Vector3[] = [new THREE.Vector3()];
+      for (const y of [-0.95, 0, 0.95]) for (const x of [-1, 1]) for (const z of [-1, 1]) samples.push(new THREE.Vector3(x * half.x * 1.02, y * half.y, z * half.z * 1.02));
+      for (const [x, z] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) samples.push(new THREE.Vector3(x * half.x * 1.02, half.y * 0.95, z * half.z * 1.02));
+      return visibility.register({ object: g, center: centre, radius: half.length(), samples, selfOccluder: i });
+    });
+    return () => { entries.forEach((e) => visibility.unregister(e)); visibility.clearOccluders(); };
+  }, [groups]);
   return <group name="city-buildings">{groups.map((g, i) => <primitive key={CITY_PLACEMENTS[i]!.id} object={g} />)}</group>;
 }
 
-/** NYC rooftop water tanks (solid; matches tank colliders). */
+/** NYC rooftop water tanks (solid; matches tank colliders), instanced: 5 draws for all tanks. */
 function WaterTanks({ gradient }: { gradient: THREE.Texture }) {
-  const tanks = CITY_PLACEMENTS.filter((p) => p.tank);
+  const tanks = useMemo(() => CITY_PLACEMENTS.filter((p) => p.tank).map((p) => ({ p, h: placementBox(p).height })), []);
+  const parts = useMemo(() => {
+    const m = new THREE.Matrix4();
+    const at = (x: number, y: number, z: number, sx = 1, sy = 1, sz = 1) => m.clone().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion(), new THREE.Vector3(sx, sy, sz));
+    const legs: THREE.Matrix4[] = [], decks: THREE.Matrix4[] = [], bodies: THREE.Matrix4[] = [], hoops: THREE.Matrix4[] = [], roofs: THREE.Matrix4[] = [];
+    for (const { p, h } of tanks) {
+      const x = p.x, z = -p.y;
+      for (const [dx, dz] of [[-1.5, -1.5], [1.5, -1.5], [-1.5, 1.5], [1.5, 1.5]] as const) legs.push(at(x + dx, h + 1.1, z + dz));
+      decks.push(at(x, h + 2.35, z));
+      bodies.push(at(x, h + 4.4, z));
+      for (const y of [3.2, 4.4, 5.6]) hoops.push(at(x, h + y, z));
+      roofs.push(at(x, h + 6.8, z));
+    }
+    return [
+      { key: "legs", list: legs, geometry: new THREE.BoxGeometry(0.25, 2.2, 0.25), color: "#2c2328", rim: false },
+      { key: "decks", list: decks, geometry: new THREE.BoxGeometry(4.2, 0.2, 4.2), color: "#3a2e2c", rim: false },
+      { key: "bodies", list: bodies, geometry: new THREE.CylinderGeometry(2.1, 2.1, 3.9, 14), color: "#8a5a3a", rim: true },
+      { key: "hoops", list: hoops, geometry: new THREE.CylinderGeometry(2.16, 2.16, 0.12, 14), color: "#2c2328", rim: false },
+      { key: "roofs", list: roofs, geometry: new THREE.ConeGeometry(2.3, 1.2, 14), color: "#4a3a36", rim: false },
+    ];
+  }, [tanks]);
+  useEffect(() => () => parts.forEach((part) => part.geometry.dispose()), [parts]);
   return (
     <group name="water-tanks">
-      {tanks.map((p) => {
-        const h = placementBox(p).height;
-        return (
-          <group key={p.id} position={[p.x, h, -p.y]}>
-            {[[-1.5, -1.5], [1.5, -1.5], [-1.5, 1.5], [1.5, 1.5]].map(([x, z], i) => (
-              <mesh key={i} position={[x!, 1.1, z!]}><boxGeometry args={[0.25, 2.2, 0.25]} /><meshToonMaterial color="#2c2328" gradientMap={gradient} /></mesh>
-            ))}
-            <mesh position={[0, 2.35, 0]}><boxGeometry args={[4.2, 0.2, 4.2]} /><meshToonMaterial color="#3a2e2c" gradientMap={gradient} /></mesh>
-            <mesh position={[0, 4.4, 0]} castShadow><cylinderGeometry args={[2.1, 2.1, 3.9, 14]} /><meshToonMaterial color="#8a5a3a" gradientMap={gradient} onBeforeCompile={rimLight} customProgramCacheKey={() => "cel-rim"} /></mesh>
-            {[3.2, 4.4, 5.6].map((y) => <mesh key={y} position={[0, y, 0]}><cylinderGeometry args={[2.16, 2.16, 0.12, 14]} /><meshToonMaterial color="#2c2328" gradientMap={gradient} /></mesh>)}
-            <mesh position={[0, 6.8, 0]}><coneGeometry args={[2.3, 1.2, 14]} /><meshToonMaterial color="#4a3a36" gradientMap={gradient} /></mesh>
-          </group>
-        );
-      })}
+      {parts.map((part) => (
+        <instancedMesh key={part.key} args={[part.geometry, undefined, part.list.length]} castShadow ref={(mesh) => { if (!mesh) return; part.list.forEach((mat, i) => mesh.setMatrixAt(i, mat)); mesh.instanceMatrix.needsUpdate = true; mesh.computeBoundingSphere(); }}>
+          <meshToonMaterial color={part.color} gradientMap={gradient} {...(part.rim ? { onBeforeCompile: rimLight, customProgramCacheKey: () => "cel-rim" } : {})} />
+        </instancedMesh>
+      ))}
     </group>
   );
 }
@@ -139,7 +175,7 @@ function Billboards() {
     uniforms: { map: { value: map }, uTime: stylizedTime, uSeed: { value: i * 1.7 } },
   })), [textures]);
   useEffect(() => () => { textures.forEach((t) => t.dispose()); materials.forEach((m) => m.dispose()); }, [textures, materials]);
-  const boards = CITY_PLACEMENTS.filter((p) => p.billboards).flatMap((p, i) => {
+  const boards = useMemo(() => CITY_PLACEMENTS.filter((p) => p.billboards).flatMap((p, i) => {
     const box = placementBox(p);
     const [sx, sy] = box.size;
     const faces: { pos: [number, number, number]; rotY: number; w: number }[] = [
@@ -148,14 +184,22 @@ function Billboards() {
       { pos: [box.position[0] + (p.x > 0 ? -1 : 1) * (sx / 2 + 0.15), 0, -box.position[1]], rotY: p.x > 0 ? -Math.PI / 2 : Math.PI / 2, w: sy * 0.8 },
     ];
     return faces.flatMap((f, k) => [0.35, 0.62].map((level, n) => ({ key: `${i}-${k}-${n}`, ...f, y: box.height * level, mat: materials[(i + k + n) % 4]! })));
-  });
+  }), [materials]);
+  // One merged mesh per billboard material: ~24 draws become 4.
+  const merged = useMemo(() => materials.map((mat) => {
+    const parts = boards.filter((b) => b.mat === mat).map((b) => {
+      const g = new THREE.PlaneGeometry(b.w, b.w * 0.62);
+      g.applyMatrix4(new THREE.Matrix4().compose(new THREE.Vector3(b.pos[0], b.y, b.pos[2]), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, b.rotY, 0)), new THREE.Vector3(1, 1, 1)));
+      return g;
+    });
+    const geometry = parts.length ? mergeGeometries(parts)! : new THREE.BufferGeometry();
+    parts.forEach((g) => g.dispose());
+    return { mat, geometry };
+  }), [boards, materials]);
+  useEffect(() => () => merged.forEach((m) => m.geometry.dispose()), [merged]);
   return (
     <group name="billboards">
-      {boards.map((b) => (
-        <mesh key={b.key} position={[b.pos[0], b.y, b.pos[2]]} rotation={[0, b.rotY, 0]} material={b.mat} userData={{ noInk: true }}>
-          <planeGeometry args={[b.w, b.w * 0.62]} />
-        </mesh>
-      ))}
+      {merged.map((m, i) => <mesh key={i} geometry={m.geometry} material={m.mat} userData={{ noInk: true }} />)}
     </group>
   );
 }
@@ -168,6 +212,13 @@ function Streets({ gradient }: { gradient: THREE.Texture }) {
     for (const x of [-66, -22, 22, 66]) for (const y of [-80, -48, -16, 16, 48, 80]) list.push([x, y]);
     return list;
   }, []);
+  const slabGeometry = useMemo(() => {
+    const parts = slabs.map(([x, y]) => new THREE.PlaneGeometry(30, 22).rotateX(-Math.PI / 2).translate(x, 0, -y));
+    const merged = mergeGeometries(parts)!;
+    parts.forEach((g) => g.dispose());
+    return merged;
+  }, [slabs]);
+  useEffect(() => () => slabGeometry.dispose(), [slabGeometry]);
   useEffect(() => {
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3();
     let n = 0;
@@ -204,12 +255,9 @@ function Streets({ gradient }: { gradient: THREE.Texture }) {
         <planeGeometry args={[CITY_BOUNDS * 2 + 220, CITY_BOUNDS * 2 + 220]} />
         <meshToonMaterial color="#39323c" gradientMap={gradient} />
       </mesh>
-      {slabs.map(([x, y]) => (
-        <mesh key={`${x}-${y}`} position={[x, 0.015, -y]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-          <planeGeometry args={[30, 22]} />
-          <meshToonMaterial color="#5a5058" gradientMap={gradient} />
-        </mesh>
-      ))}
+      <mesh geometry={slabGeometry} position={[0, 0.015, 0]} receiveShadow>
+        <meshToonMaterial color="#5a5058" gradientMap={gradient} />
+      </mesh>
       <instancedMesh ref={dashes} args={[undefined, undefined, 900]} userData={{ noInk: true }} frustumCulled={false}>
         <planeGeometry args={[1, 1]} />
         <meshBasicMaterial color="#c9b98a" />
@@ -222,27 +270,31 @@ function Streets({ gradient }: { gradient: THREE.Texture }) {
   );
 }
 
+/** Rubble chunks, one instanced draw with per-chunk colour. */
 function Rubble({ gradient }: { gradient: THREE.Texture }) {
   const chunks = useMemo(() => CITY_RUBBLE.flatMap((r, i) => Array.from({ length: 9 }, (_, k) => {
     const v = (n: number) => { const x = Math.sin((i + 1) * 12.9 + k * 7.3 + n * 3.1) * 43758.5; return x - Math.floor(x); };
-    const s = Math.min(r.size[0], r.size[1]) * (0.22 + v(1) * 0.2);
+    const scale = Math.min(r.size[0], r.size[1]) * (0.22 + v(1) * 0.2);
     return {
-      key: `${r.id}-${k}`,
-      position: [r.position[0] + (v(2) - 0.5) * r.size[0] * 0.7, s * 0.6 + (k > 5 ? r.size[2] * 0.45 : 0), -(r.position[1] + (v(3) - 0.5) * r.size[1] * 0.7)] as [number, number, number],
-      rotation: [v(4) * 3, v(5) * 3, v(6) * 3] as [number, number, number],
-      scale: s,
-      color: ["#6a5e62", "#524850", "#7a6a60", "#8a4a3a"][k % 4]!,
+      position: new THREE.Vector3(r.position[0] + (v(2) - 0.5) * r.size[0] * 0.7, scale * 0.6 + (k > 5 ? r.size[2] * 0.45 : 0), -(r.position[1] + (v(3) - 0.5) * r.size[1] * 0.7)),
+      rotation: new THREE.Euler(v(4) * 3, v(5) * 3, v(6) * 3),
+      scale,
+      color: new THREE.Color(["#6a5e62", "#524850", "#7a6a60", "#8a4a3a"][k % 4]!),
     };
   })), []);
+  const geometry = useMemo(() => new THREE.DodecahedronGeometry(1, 0), []);
+  useEffect(() => () => geometry.dispose(), [geometry]);
   return (
-    <group name="rubble">
-      {chunks.map((c) => (
-        <mesh key={c.key} position={c.position} rotation={c.rotation} scale={c.scale} castShadow receiveShadow>
-          <dodecahedronGeometry args={[1, 0]} />
-          <meshToonMaterial color={c.color} gradientMap={gradient} />
-        </mesh>
-      ))}
-    </group>
+    <instancedMesh name="rubble" args={[geometry, undefined, chunks.length]} castShadow receiveShadow ref={(mesh) => {
+      if (!mesh) return;
+      const m = new THREE.Matrix4();
+      chunks.forEach((c, i) => { mesh.setMatrixAt(i, m.compose(c.position, new THREE.Quaternion().setFromEuler(c.rotation), new THREE.Vector3().setScalar(c.scale))); mesh.setColorAt(i, c.color); });
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      mesh.computeBoundingSphere();
+    }}>
+      <meshToonMaterial gradientMap={gradient} />
+    </instancedMesh>
   );
 }
 
@@ -298,42 +350,69 @@ void main() {
   #include <colorspace_fragment>
 }`;
 
-function Flames() {
-  const { geometry, material } = useMemo(() => {
+function Flames({ lean }: { lean: boolean }) {
+  const { geometry, material, fires } = useMemo(() => {
     const quad = new THREE.PlaneGeometry(1, 1);
     const geometry = new THREE.InstancedBufferGeometry();
     geometry.index = quad.index;
     geometry.setAttribute("position", quad.attributes.position!);
     geometry.setAttribute("uv", quad.attributes.uv!);
-    const offsets: number[] = [], sizes: number[] = [], seeds: number[] = [];
-    CITY_FIRES.forEach((f, i) => {
-      const tongues = f.size > 3 ? 3 : 2;
-      for (let k = 0; k < tongues; k++) {
-        offsets.push(f.position[0] + (k - (tongues - 1) / 2) * f.size * 0.35, f.position[1], f.position[2] + ((k * 7) % 3 - 1) * 0.4);
-        sizes.push(f.size * (k === Math.floor(tongues / 2) ? 1 : 0.7));
-        seeds.push(i * 0.37 + k * 0.61);
-      }
+    const fires = CITY_FIRES.map((f, i) => {
+      const tongues = lean ? 1 : f.size > 3 ? 3 : 2;
+      return {
+        centre: new THREE.Vector3(f.position[0], f.position[1] + f.size * 0.8, f.position[2]),
+        radius: f.size * 1.6,
+        tongues: Array.from({ length: tongues }, (_, k) => ({
+          offset: [f.position[0] + (k - (tongues - 1) / 2) * f.size * 0.35, f.position[1], f.position[2] + ((k * 7) % 3 - 1) * 0.4] as const,
+          size: f.size * (k === Math.floor(tongues / 2) ? 1 : 0.7),
+          seed: i * 0.37 + k * 0.61,
+        })),
+      };
     });
-    geometry.setAttribute("aOffset", new THREE.InstancedBufferAttribute(new Float32Array(offsets), 3));
-    geometry.setAttribute("aSize", new THREE.InstancedBufferAttribute(new Float32Array(sizes), 1));
-    geometry.setAttribute("aSeed", new THREE.InstancedBufferAttribute(new Float32Array(seeds), 1));
-    geometry.instanceCount = sizes.length;
+    const total = fires.reduce((n, f) => n + f.tongues.length, 0);
+    geometry.setAttribute("aOffset", new THREE.InstancedBufferAttribute(new Float32Array(total * 3), 3).setUsage(THREE.DynamicDrawUsage));
+    geometry.setAttribute("aSize", new THREE.InstancedBufferAttribute(new Float32Array(total), 1).setUsage(THREE.DynamicDrawUsage));
+    geometry.setAttribute("aSeed", new THREE.InstancedBufferAttribute(new Float32Array(total), 1).setUsage(THREE.DynamicDrawUsage));
+    geometry.instanceCount = 0;
     const material = new THREE.ShaderMaterial({ vertexShader: flameVertex, fragmentShader: flameFragment, uniforms: { uTime: stylizedTime }, side: THREE.DoubleSide });
-    return { geometry, material };
-  }, []);
+    return { geometry, material, fires };
+  }, [lean]);
   useEffect(() => () => { geometry.dispose(); material.dispose(); }, [geometry, material]);
+  const next = useRef(0);
+  // Occlusion-culled batching: every few frames, pack only visible fires into
+  // the instance buffers, so fires behind towers cost no fill at all.
+  useFrame(() => {
+    const t = performance.now();
+    if (t < next.current) return;
+    next.current = t + 120;
+    const offset = geometry.getAttribute("aOffset") as THREE.InstancedBufferAttribute;
+    const size = geometry.getAttribute("aSize") as THREE.InstancedBufferAttribute;
+    const seed = geometry.getAttribute("aSeed") as THREE.InstancedBufferAttribute;
+    let n = 0;
+    for (const fire of fires) {
+      if (!isSphereVisible(fire.centre, fire.radius)) continue;
+      for (const tongue of fire.tongues) { offset.setXYZ(n, ...tongue.offset); size.setX(n, tongue.size); seed.setX(n, tongue.seed); n++; }
+    }
+    geometry.instanceCount = n;
+    offset.needsUpdate = size.needsUpdate = seed.needsUpdate = true;
+  });
   return <mesh geometry={geometry} material={material} frustumCulled={false} userData={{ noInk: true }} />;
 }
 
 /** Inked smoke balls rising from the big fires and drifting downwind. */
-function Smoke({ gradient }: { gradient: THREE.Texture }) {
+function Smoke({ gradient, lean }: { gradient: THREE.Texture; lean: boolean }) {
   const mesh = useRef<THREE.InstancedMesh>(null);
-  const plumes = useMemo(() => CITY_FIRES.filter((f) => f.plume), []);
+  const plumes = useMemo(() => CITY_FIRES.filter((f) => f.plume).slice(0, lean ? 5 : undefined), [lean]);
+  const plumeCentre = useMemo(() => plumes.map((f) => new THREE.Vector3(f.position[0] + 6, f.position[1] + f.size + 16, f.position[2])), [plumes]);
   const PER = 9;
   const tmp = useMemo(() => ({ m: new THREE.Matrix4(), q: new THREE.Quaternion(), s: new THREE.Vector3(), p: new THREE.Vector3() }), []);
   useFrame(() => {
     const t = stylizedTime.value;
     plumes.forEach((f, i) => {
+      if (!isSphereVisible(plumeCentre[i]!, 24)) {
+        for (let k = 0; k < PER; k++) mesh.current?.setMatrixAt(i * PER + k, tmp.m.makeScale(0, 0, 0));
+        return;
+      }
       for (let k = 0; k < PER; k++) {
         const life = ((t * 0.09 + k / PER + i * 0.13) % 1);
         const rise = life * (26 + f.size * 4);
@@ -512,17 +591,53 @@ function DistantSkyline() {
   );
 }
 
+const SHADOW_EXTENT = 90;
+const SHADOW_MAP = 2048;
+const SUN_DIR = new THREE.Vector3(140, 70, 90).normalize();
+
 function Lights() {
   const hemi = useRef<THREE.HemisphereLight>(null);
   const key = useRef<THREE.DirectionalLight>(null);
   const fires = useRef<THREE.PointLight[]>([]);
-  const { scene } = useThree();
-  const spots = useMemo(() => CITY_FIRES.filter((f) => f.plume).slice(0, 6), []);
+  const { scene, camera } = useThree();
+  const { tier } = useSyncExternalStore(visualQuality.subscribe, qualitySnapshot);
+  const lightCount = tier === 0 ? 1 : 3;
+  const plumes = useMemo(() => CITY_FIRES.filter((f) => f.plume), []);
+  const tmp = useMemo(() => ({ right: new THREE.Vector3(), up: new THREE.Vector3(), centre: new THREE.Vector3(), next: 0 }), []);
+  useEffect(() => {
+    // Hidden (occlusion-culled) towers must still cast shadows.
+    key.current?.shadow.camera.layers.enable(HIDDEN_LAYER);
+    if (key.current) scene.add(key.current.target);
+    return () => { if (key.current) scene.remove(key.current.target); };
+  }, [scene]);
   useFrame(() => {
     const flash = (scene.userData.lightning as number) ?? 0;
     if (hemi.current) hemi.current.intensity = 0.95 + flash * 2.5;
-    if (key.current) key.current.intensity = 2.1 + flash * 1.8;
+    const light = key.current;
+    if (light) {
+      light.intensity = 2.1 + flash * 1.8;
+      // Shadow camera follows the view, snapped to whole shadow texels in
+      // light space so edges don't shimmer as you fly.
+      const texel = (SHADOW_EXTENT * 2) / SHADOW_MAP;
+      tmp.right.crossVectors(SUN_DIR, THREE.Object3D.DEFAULT_UP).normalize();
+      tmp.up.crossVectors(tmp.right, SUN_DIR).normalize();
+      tmp.centre.copy(camera.position);
+      tmp.centre.y = 0;
+      const r = Math.round(tmp.centre.dot(tmp.right) / texel) * texel;
+      const u = Math.round(tmp.centre.dot(tmp.up) / texel) * texel;
+      const f = tmp.centre.dot(SUN_DIR);
+      tmp.centre.copy(tmp.right).multiplyScalar(r).addScaledVector(tmp.up, u).addScaledVector(SUN_DIR, f);
+      light.target.position.copy(tmp.centre);
+      light.position.copy(tmp.centre).addScaledVector(SUN_DIR, 220);
+      light.target.updateMatrixWorld();
+    }
+    // Light LOD: a few dynamic lights re-assigned to the fires nearest you.
     const t = stylizedTime.value;
+    if (t > tmp.next) {
+      tmp.next = t + 0.4;
+      const nearest = [...plumes].sort((a, b) => camera.position.distanceToSquared(new THREE.Vector3(...a.position)) - camera.position.distanceToSquared(new THREE.Vector3(...b.position)));
+      fires.current.forEach((l, i) => { const fire = nearest[i]; if (l && fire) l.position.set(fire.position[0], fire.position[1] + fire.size, fire.position[2]); });
+    }
     fires.current.forEach((l, i) => { if (l) l.intensity = 900 * (0.8 + 0.2 * Math.sin(t * 13 + i * 2) * Math.sin(t * 7.3 + i)); });
   });
   return (
@@ -532,22 +647,22 @@ function Lights() {
       <hemisphereLight ref={hemi} args={["#b08a9a", "#2a1418", 0.95]} />
       <directionalLight
         ref={key}
-        position={[140, 70, 90]}
-        intensity={1.5}
+        intensity={2.1}
         color="#ffb27a"
         castShadow
-        shadow-mapSize={[2048, 2048]}
-        shadow-camera-left={-130}
-        shadow-camera-right={130}
-        shadow-camera-top={130}
-        shadow-camera-bottom={-130}
-        shadow-camera-far={450}
+        shadow-mapSize={[tier === 0 ? 1024 : SHADOW_MAP, tier === 0 ? 1024 : SHADOW_MAP]}
+        shadow-camera-left={-SHADOW_EXTENT}
+        shadow-camera-right={SHADOW_EXTENT}
+        shadow-camera-top={SHADOW_EXTENT}
+        shadow-camera-bottom={-SHADOW_EXTENT}
+        shadow-camera-near={20}
+        shadow-camera-far={420}
         shadow-bias={-0.0004}
         shadow-normalBias={0.05}
       />
       <directionalLight position={[-90, 40, -120]} intensity={0.45} color="#7a5cff" />
-      {spots.map((f, i) => (
-        <pointLight key={i} ref={(l) => { if (l) fires.current[i] = l; }} position={[f.position[0], f.position[1] + f.size, f.position[2]]} color="#ff7a2a" intensity={900} distance={60} decay={2} />
+      {Array.from({ length: lightCount }, (_, i) => (
+        <pointLight key={`${tier}-${i}`} ref={(l) => { if (l) fires.current[i] = l; }} color="#ff7a2a" intensity={900} distance={60} decay={2} />
       ))}
     </>
   );
@@ -564,20 +679,23 @@ export function CityWorld({ scenario }: { scenario?: Scenario }) {
   }, [gl]);
   void scenario;
   void CITY_WORLD;
+  // Performance tier: fewer effects particles, capped smoke, one flame tongue, no far skyline.
+  const { tier } = useSyncExternalStore(visualQuality.subscribe, qualitySnapshot);
+  const lean = tier === 0;
   return (
     <>
       <Lights />
       <Sky />
-      <DistantSkyline />
+      {!lean && <DistantSkyline />}
       <Streets gradient={gradient} />
       <Buildings gradient={gradient} />
       <WaterTanks gradient={gradient} />
       <Billboards />
       <Rubble gradient={gradient} />
-      <Flames />
-      <Smoke gradient={gradient} />
-      <Particles count={700} fall={false} />
-      <Particles count={900} fall />
+      <Flames lean={lean} />
+      <Smoke key={lean ? "lean" : "full"} gradient={gradient} lean={lean} />
+      <Particles key={lean ? "e-lean" : "e-full"} count={lean ? 220 : 700} fall={false} />
+      <Particles key={lean ? "a-lean" : "a-full"} count={lean ? 260 : 900} fall />
     </>
   );
 }

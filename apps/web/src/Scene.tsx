@@ -14,6 +14,7 @@ import { CityWorld } from "./CityWorld";
 import { CITY_WORLD } from "../../../packages/contracts/city-world";
 import { cameraShake } from "./combat-store";
 import { presented, updatePresentation } from "./presentation";
+import { updateVisibility } from "./visibility";
 import { FREE_WORLD } from "../../../packages/contracts/free-world";
 import { PIZZERIA_WORLD } from "../../../packages/contracts/pizzeria-world";
 export type CameraMode = "Chase" | "FPV" | "Orbit";
@@ -362,6 +363,8 @@ function VelocityTrails({ state, enabled }: { state: MutableRefObject<PhysicalSt
 /** Updates the smoothed pose once per frame, before cameras and models read it. */
 function PresentationClock({ state }: { state: MutableRefObject<PhysicalState | undefined> }) {
   useFrame((_, dt) => updatePresentation(state.current, performance.now(), dt), -1);
+  // Visibility culling runs after the camera rig (priority 0), before rendering (1).
+  useFrame(({ camera }) => updateVisibility(camera, performance.now() / 1000), 0.5);
   return null;
 }
 function Rig({
@@ -374,7 +377,9 @@ function Rig({
   stabilizeView,
   onFps,
   onCapture,
+  cameraBlockers = [],
 }: {
+  cameraBlockers?: THREE.Box3[];
   state: MutableRefObject<PhysicalState | undefined>;
   cameraMode: CameraMode;
   lookRef: MutableRefObject<FlightLook>;
@@ -396,6 +401,9 @@ function Rig({
   const yaw = useMemo(() => new THREE.Quaternion(), []);
   const pitch = useMemo(() => new THREE.Quaternion(), []);
   const tracker = useRef({ frames: 0, start: performance.now() });
+  const probe = useMemo(() => new THREE.Vector3(), []);
+  const probeHit = useMemo(() => new THREE.Vector3(), []);
+  const probeRay = useMemo(() => new THREE.Ray(), []);
   const step = useRef(0);
   const impulse = useRef({ collisions: 0, time: -1, hitAt: -10 });
   useEffect(() => {
@@ -475,7 +483,20 @@ function Rig({
           forward.set(1, 0, 0).applyQuaternion(body);
           goal.copy(look).addScaledVector(forward, -6.2);
           goal.y += 1.5;
-          camera.position.lerp(goal, 1 - Math.exp(-dt * 18));
+          // Camera collision: pull in in front of any wall between drone and camera.
+          if (cameraBlockers.length) {
+            probe.subVectors(goal, look);
+            const reach = probe.length();
+            probeRay.set(look, probe.divideScalar(reach));
+            let nearest = reach;
+            for (const box of cameraBlockers) {
+              if (box.containsPoint(look)) continue;
+              if (probeRay.intersectBox(box, probeHit)) nearest = Math.min(nearest, probeHit.distanceTo(look));
+            }
+            if (nearest < reach) goal.copy(look).addScaledVector(probeRay.direction, Math.max(0.8, nearest - 0.6));
+            goal.y = Math.max(goal.y, 0.6);
+          }
+          camera.position.lerp(goal, 1 - Math.exp(-dt * (cameraBlockers.length ? 22 : 18)));
           camera.up.set(0, 1, 0);
           // Aim at a far point on the look ray so screen centre is the true
           // line of fire and the drone sits just below it.
@@ -566,6 +587,9 @@ export function FlightScene({
   ) => void;
 }) {
   const defaultLook = useRef<FlightLook>({ yaw: 0, pitch: 0 });
+  // Solid map boxes (Three coords) the third-person camera must not pass through.
+  const cameraBlockers = useMemo(() => (scenario?.id === "free" ? scenario.obstacles : []).map((o) =>
+    new THREE.Box3().setFromCenterAndSize(new THREE.Vector3(...visual(o.position)), new THREE.Vector3(o.size[0], o.size[2], o.size[1]))), [scenario]);
   return (
     <Canvas
       shadows={{ type: THREE.PCFShadowMap }}
@@ -621,6 +645,7 @@ export function FlightScene({
         />
       )}
       <Rig
+        cameraBlockers={cameraBlockers}
         state={state}
         cameraMode={cameraMode}
         lookRef={lookRef ?? defaultLook}

@@ -4,6 +4,7 @@ import * as THREE from "three";
 import type { PhysicalState } from "../../../packages/contracts";
 import { stylizedTime } from "./cel-material";
 import { cameraShake } from "./combat-store";
+import { visibility } from "./visibility";
 
 /**
  * Per-world art direction for the screen-space ink + grade pass. Values are
@@ -217,6 +218,8 @@ let activeTier: QualityTier = preference === "auto" ? (softwareRenderer() ? 0 : 
 const qualityListeners = new Set<() => void>();
 const emitQuality = () => qualityListeners.forEach((listener) => listener());
 
+const frameStats = { calls: 0, triangles: 0, frameMs: 16.7, tier: 2 as QualityTier };
+
 /** Visual quality preference + the tier actually rendering (Auto adapts to measured frame rate). */
 export const visualQuality = {
   get: () => ({ preference, tier: activeTier }),
@@ -365,7 +368,49 @@ export function ToonPipeline({
     pipeline.material.uniforms.thickness.value = Math.max(1.25, Math.min(3, y / 640));
   }, [gl, size, pipeline]);
 
+  // Frame-total render stats (all passes), read-only, for profiling and tests.
+  useEffect(() => {
+    gl.info.autoReset = false;
+    const hook = {
+      stats: () => ({ ...frameStats, culling: { ...visibility.stats } }),
+      /** Triangles per top-level group for one pass (visible to the main camera). */
+      triangles: () => {
+        const out: Record<string, number> = {};
+        for (const child of scene.children) {
+          let n = 0;
+          child.traverseVisible((o) => {
+            const mesh = o as THREE.Mesh;
+            if (!mesh.isMesh || !mesh.layers.test(camera.layers)) return;
+            const g = mesh.geometry;
+            const per = (g.index ? g.index.count : g.attributes.position?.count ?? 0) / 3;
+            const instances = (mesh as THREE.InstancedMesh).isInstancedMesh ? (mesh as THREE.InstancedMesh).count : (g as THREE.InstancedBufferGeometry).isInstancedBufferGeometry ? (g as THREE.InstancedBufferGeometry).instanceCount : 1;
+            n += per * instances;
+          });
+          if (n) out[child.name || child.type] = (out[child.name || child.type] ?? 0) + Math.round(n);
+        }
+        return out;
+      },
+      /** Visible drawable meshes per top-level scene group (draws per pass, before frustum culling). */
+      breakdown: () => {
+        const counts: Record<string, number> = {};
+        for (const child of scene.children) {
+          let n = 0;
+          child.traverseVisible((o) => { if ((o as THREE.Mesh).isMesh || (o as THREE.Points).isPoints) n++; });
+          if (n) counts[child.name || child.type] = (counts[child.name || child.type] ?? 0) + n;
+        }
+        return counts;
+      },
+    };
+    (window as unknown as { dronelabRender?: typeof hook }).dronelabRender = hook;
+    return () => { gl.info.autoReset = true; delete (window as unknown as { dronelabRender?: typeof hook }).dronelabRender; };
+  }, [gl, scene]);
+
   useFrame((_, dt) => {
+    frameStats.calls = gl.info.render.calls;
+    frameStats.triangles = gl.info.render.triangles;
+    frameStats.frameMs = frameStats.frameMs * 0.9 + dt * 1000 * 0.1;
+    frameStats.tier = activeTier;
+    gl.info.reset();
     const { color, normal, normalMaterial, material, quadScene, quadCamera, hidden, swapped, clippedNormals, fx, governor } = pipeline;
     const u = material.uniforms;
     stylizedTime.value += Math.min(dt, 0.1);

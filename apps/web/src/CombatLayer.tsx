@@ -6,6 +6,8 @@ import { clone as cloneSkinned } from "three/examples/jsm/utils/SkeletonUtils.js
 import type { Obstacle, PhysicalState, V3 } from "../../../packages/contracts";
 import type { FreeWorldDefinition, FreeWorldMapId } from "../../../packages/contracts/free-world";
 import { CITY_RUBBLE } from "../../../packages/contracts/city-world";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { visibility, type Cullable } from "./visibility";
 import { rimLight } from "./cel-material";
 import { addTrauma, combatEvents, combatInput, combatSfx, combatStats, droneFx, queueKick, type CombatEvent } from "./combat-store";
 
@@ -37,7 +39,7 @@ const bot = (id: string, position: V3): TargetSpec => ({ id, kind: "bot", positi
 const barrel = (id: string, x: number, y: number): TargetSpec => ({ id, kind: "barrel", position: [x, y, 0.55] });
 
 const CAR_MODELS = ["taxi", "taxi", "sedan", "police", "van", "suv", "taxi", "truck", "ambulance", "delivery", "garbage-truck", "hatchback-sports"];
-const ETHEREAL_HP: Record<string, number> = { goleling: 22, squidle: 18, dragonfly: 14 };
+const ETHEREAL_HP: Record<string, number> = { goleling: 22, squidle: 18, dragonfly: 14, orc: 90 };
 const cityCars = (): TargetSpec[] => {
   const out: TargetSpec[] = [];
   const r = (i: number, k: number) => { const v = Math.sin(i * 91.7 + k * 13.1) * 43758.5; return v - Math.floor(v); };
@@ -67,7 +69,7 @@ export const COMBAT_TARGETS: Record<FreeWorldMapId, TargetSpec[]> = {
     ethereal("e-squ-1", "squidle", [-20, 0, 16]), ethereal("e-squ-2", "squidle", [0, -40, 22]), ethereal("e-squ-3", "squidle", [44, -20, 30]),
     ethereal("e-squ-4", "squidle", [-88, -40, 18]), ethereal("e-squ-5", "squidle", [22, 80, 24]),
     ethereal("e-dra-1", "dragonfly", [-44, 80, 20]), ethereal("e-dra-2", "dragonfly", [88, 64, 16]), ethereal("e-dra-3", "dragonfly", [-10, 40, 34]), ethereal("e-dra-4", "dragonfly", [30, -90, 20]),
-    { ...ethereal("e-boss-1", "goleling", [0, 0, 3.6]), boss: true, hp: 90 }, { ...ethereal("e-boss-2", "goleling", [-44, -48, 3.6]), boss: true, hp: 90 },
+    { ...ethereal("e-boss-1", "orc", [0, 0, 0]), boss: true }, { ...ethereal("e-boss-2", "orc", [-44, -48, 0]), boss: true },
   ],
   valley: [
     bot("air-1", [30, 12, 6]), bot("air-2", [46, 22, 10]), bot("air-3", [-12, 32, 8]),
@@ -146,6 +148,12 @@ interface Live {
   current?: string;
   fire?: THREE.Object3D;
   ai?: { attackReady: number; hitAt: number; lungeAt: number };
+  /** Visibility-culling entry (city) and accumulated animation time for update-rate LOD. */
+  cull?: Cullable;
+  animDt?: number;
+  /** Shadow LOD: cached caster meshes and current state. */
+  casters?: THREE.Mesh[];
+  castingShadow?: boolean;
 }
 
 /** Loaded GLB sources for the city (cars, Ethereals, car debris). */
@@ -169,9 +177,53 @@ function toonCar(source: THREE.Object3D, gradient: THREE.Texture, live: Live) {
   return car;
 }
 
+/** Each Kenney car's parts baked into one geometry, shared by every car of that model. */
+const mergedCarGeometry = new WeakMap<THREE.Object3D, { geometry: THREE.BufferGeometry; map: THREE.Texture | null; color: THREE.Color }>();
+function carGeometry(source: THREE.Object3D) {
+  let entry = mergedCarGeometry.get(source);
+  if (entry) return entry;
+  source.updateMatrixWorld(true);
+  const parts: THREE.BufferGeometry[] = [];
+  let first: THREE.MeshStandardMaterial | undefined;
+  source.traverse((child) => {
+    const mesh = child as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    first ??= mesh.material as THREE.MeshStandardMaterial;
+    const g = mesh.geometry.clone().applyMatrix4(mesh.matrixWorld);
+    for (const name of Object.keys(g.attributes)) if (!["position", "normal", "uv"].includes(name)) g.deleteAttribute(name);
+    parts.push(g.index ? g.toNonIndexed() : g);
+  });
+  const geometry = mergeGeometries(parts)!;
+  parts.forEach((g) => g.dispose());
+  entry = { geometry, map: first?.map ?? null, color: first?.color?.clone() ?? new THREE.Color("#ffffff") };
+  mergedCarGeometry.set(source, entry);
+  return entry;
+}
+
+let fireGeometry: THREE.BufferGeometry | undefined;
+/** Five stepped flame cones merged into one vertex-coloured mesh (one draw per burning car). */
+function carFireGeometry() {
+  if (fireGeometry) return fireGeometry;
+  const colours = ["#ff5a1f", "#ff9a2a", "#ffe07a"].map((c) => new THREE.Color(c));
+  const parts = Array.from({ length: 5 }, (_, i) => {
+    const cone = new THREE.ConeGeometry(0.55 - (i % 3) * 0.12, 1.6 + (i % 3) * 0.5, 7).toNonIndexed();
+    cone.translate((i - 2) * 0.55, 2.2 + (i % 2) * 0.3, ((i * 7) % 3 - 1) * 0.5);
+    const c = colours[i % 3]!;
+    cone.setAttribute("color", new THREE.Float32BufferAttribute(Array.from({ length: cone.attributes.position!.count }, () => [c.r, c.g, c.b]).flat(), 3));
+    return cone;
+  });
+  fireGeometry = mergeGeometries(parts)!;
+  return fireGeometry;
+}
+
 function buildCar(models: CombatModels, gradient: THREE.Texture, live: Live) {
   const g = new THREE.Group();
-  const body = toonCar(models.cars[live.spec.model ?? "taxi"] ?? models.cars.taxi!, gradient, live);
+  const source = models.cars[live.spec.model ?? "taxi"] ?? models.cars.taxi!;
+  const merged = carGeometry(source);
+  const paint = new THREE.MeshToonMaterial({ map: merged.map, color: merged.color, gradientMap: gradient });
+  live.materials.push(paint);
+  const body = new THREE.Mesh(merged.geometry, paint);
+  body.castShadow = true;
   body.scale.setScalar(1.7);
   if (live.spec.flipped === 1) { body.rotation.z = Math.PI / 2; body.position.y = 1.3; }
   if (live.spec.flipped === 2) { body.rotation.x = Math.PI; body.position.y = 2.3; }
@@ -180,13 +232,7 @@ function buildCar(models: CombatModels, gradient: THREE.Texture, live: Live) {
   g.rotation.y = live.spec.yaw ?? 0;
   if (live.spec.burning) {
     // Inked manga fire: stepped toon cones that flicker on a held clock.
-    const fire = new THREE.Group();
-    const colours = ["#ff5a1f", "#ff9a2a", "#ffe07a"];
-    for (let i = 0; i < 5; i++) {
-      const cone = new THREE.Mesh(new THREE.ConeGeometry(0.55 - (i % 3) * 0.12, 1.6 + (i % 3) * 0.5, 7), new THREE.MeshToonMaterial({ color: colours[i % 3], emissive: colours[i % 3], emissiveIntensity: 0.9, gradientMap: gradient }));
-      cone.position.set((i - 2) * 0.55, 2.2 + (i % 2) * 0.3, ((i * 7) % 3 - 1) * 0.5);
-      fire.add(cone);
-    }
+    const fire = new THREE.Mesh(carFireGeometry(), new THREE.MeshToonMaterial({ vertexColors: true, emissive: "#ff6a1a", emissiveIntensity: 0.75, gradientMap: gradient }));
     live.fire = fire;
     g.add(fire);
   }
@@ -228,7 +274,8 @@ function buildEthereal(models: CombatModels, gradient: THREE.Texture, live: Live
   const size = box.getSize(new THREE.Vector3());
   const k = (live.spec.boss ? 7.5 : ETHEREAL_HEIGHT[live.spec.model ?? "goleling"] ?? 2.5) / Math.max(size.y * 1.25, 1e-4);
   body.scale.multiplyScalar(k);
-  body.position.y = -box.min.y * k - (size.y * k) / 2;
+  // Flyers are centred on their holder; the orc brute stands with its feet on it.
+  body.position.y = -box.min.y * k - (live.spec.model === "orc" ? 0 : (size.y * k) / 2);
   holder.userData.debugHeight = size.y * k;
   live.mixer = new THREE.AnimationMixer(body);
   live.actions = {};
@@ -456,6 +503,22 @@ export function CombatLayer({
     }
     return group;
   }, [targets, gradient, scale, models]);
+  // Visibility culling (city): cars and monsters hide behind towers and
+  // off-screen; skinned monsters get manual frustum culling this way too.
+  useEffect(() => {
+    if (mapId !== "city") return;
+    const entries = targets.filter((t) => t.group && (t.spec.kind === "car" || t.spec.kind === "ethereal")).map((t) => {
+      const group = t.group!;
+      t.cull = visibility.register({
+        object: group,
+        center: group.position.clone(),
+        radius: radiusOf(t.spec, scale) + 1.2,
+        update: (c) => { c.center.copy(group.position); if (t.spec.kind === "car") c.center.y += 1.2; },
+      });
+      return t.cull;
+    });
+    return () => { entries.forEach((e) => visibility.unregister(e)); targets.forEach((t) => { t.cull = undefined; }); };
+  }, [mapId, targets, root, scale]);
   // Car explosions throw real Kenney car parts.
   const debris = useMemo(() => (models?.debris ?? []).flatMap((source) => Array.from({ length: 4 }, () => {
     const mesh = toonCar(source, gradient, { materials: [] } as unknown as Live);
@@ -464,6 +527,7 @@ export function CombatLayer({
     return { mesh, v: new THREE.Vector3(), spin: new THREE.Vector3(), life: 0 };
   })), [models, gradient]);
   const debrisCursor = useRef(0);
+  const frameCount = useRef(0);
 
   const fx = useMemo(() => {
     const explosions = Array.from({ length: 7 }, () => new Explosion(gradient, star));
@@ -660,7 +724,7 @@ export function CombatLayer({
   // Read-only inspection hook for browser tests and debugging.
   useEffect(() => {
     const hook = {
-      targets: () => targets.map((t) => ({ id: t.spec.id, kind: t.spec.kind, alive: t.alive, hp: t.hp, position: t.group ? enu(t.group.position) : t.spec.position, extent: t.group ? new THREE.Box3().setFromObject(t.group).getSize(new THREE.Vector3()).toArray().map((v) => +v.toFixed(1)) : undefined })),
+      targets: () => targets.map((t) => ({ id: t.spec.id, kind: t.spec.kind, alive: t.alive, hp: t.hp, culled: t.cull ? !t.cull.visible : undefined, position: t.group ? enu(t.group.position) : t.spec.position, extent: t.group ? new THREE.Box3().setFromObject(t.group).getSize(new THREE.Vector3()).toArray().map((v) => +v.toFixed(1)) : undefined })),
       stats: () => combatStats.get(),
     };
     (window as unknown as { dronelabCombat?: typeof hook }).dronelabCombat = hook;
@@ -668,6 +732,7 @@ export function CombatLayer({
   }, [targets]);
 
   useFrame(({ camera: cam }, rawDt) => {
+    frameCount.current++;
     const dt = Math.min(rawDt, 0.05);
     const r = sim.current;
     r.time += dt;
@@ -695,7 +760,23 @@ export function CombatLayer({
     for (const live of targets) {
       const g = live.group;
       if (!g) continue;
-      live.mixer?.update(dt);
+      // Shadow LOD: hidden or distant targets stop casting (towers always do).
+      if (live.cull) {
+        const cast = live.cull.visible && live.cull.distance < 90;
+        if (cast !== live.castingShadow) {
+          live.castingShadow = cast;
+          live.casters ??= (() => { const list: THREE.Mesh[] = []; g.traverse((o) => { if ((o as THREE.Mesh).isMesh && o !== live.fire) list.push(o as THREE.Mesh); }); return list; })();
+          for (const mesh of live.casters) mesh.castShadow = cast;
+        }
+      }
+      // Animation update-rate LOD: skip while hidden, tick every 2nd/3rd frame when far.
+      if (live.mixer) {
+        live.animDt = Math.min(0.25, (live.animDt ?? 0) + dt);
+        const seen = !live.cull || live.cull.visible;
+        const far = live.cull?.distance ?? 0;
+        const stride = far > 80 ? 3 : far > 40 ? 2 : 1;
+        if (seen && frameCount.current % stride === 0) { live.mixer.update(live.animDt); live.animDt = 0; }
+      }
       if (!live.alive) {
         if (r.time >= live.respawnAt) {
           live.alive = true; live.hp = maxHp(live.spec); live.spawnedAt = r.time; g.visible = true;
@@ -715,7 +796,7 @@ export function CombatLayer({
         if (live.eyes) live.eyes.color.set(live.hp < HP.bot * 0.4 ? "#ff3b5c" : "#ffe14d").multiplyScalar(Math.sin(r.time * 3 + phase) > 0.96 ? 0.1 : 1.6);
       } else if (live.spec.kind === "car" && live.fire) {
         const tick = Math.floor(r.time * 12);
-        live.fire.children.forEach((cone, i) => { cone.scale.set(1, 0.75 + ((tick * 7 + i * 13) % 10) / 22, 1); });
+        live.fire.scale.set(1 + ((tick * 3) % 5) / 40, 0.8 + ((tick * 7 + live.spec.id.length * 13) % 10) / 22, 1);
       } else if (live.spec.kind === "ethereal" && live.ai && s) {
         const brute = live.spec.boss;
         const toDrone = tmp.s.copy(tmp.drone).sub(g.position);
@@ -749,13 +830,13 @@ export function CombatLayer({
               emit({ type: "bounce", x: screen.x, y: screen.y, speed: brute ? 40 : 24 });
               combatSfx.play("bounce", brute ? 30 : 18);
             }, brute ? 380 : 260);
-          } else if (!lunging) play(live, "Fast_Flying");
+          } else if (!lunging) play(live, live.spec.model === "orc" ? "Run" : "Fast_Flying");
         } else if (!hitReacting && !lunging) {
           // Drift home and idle.
           const home = toDrone.copy(base).sub(g.position);
           if (home.length() > 0.5) g.position.addScaledVector(home.normalize(), Math.min(home.length(), 4 * dt));
           if (!brute) g.position.y += Math.sin(r.time * 1.4 + phase) * 0.01;
-          play(live, "Flying_Idle");
+          play(live, live.spec.model === "orc" ? "Idle" : "Flying_Idle");
         }
         tmp.q.setFromAxisAngle(tmp.up.set(0, 1, 0), Math.atan2(tmp.drone.x - g.position.x, tmp.drone.z - g.position.z));
         g.quaternion.slerp(tmp.q, 1 - Math.exp(-dt * 8));
@@ -860,7 +941,7 @@ export function CombatLayer({
 const CAR_URL = (name: string) => `${import.meta.env.BASE_URL}models/cars/${name}.glb`;
 const ETHEREAL_URL = (name: string) => `${import.meta.env.BASE_URL}models/ethereals/${name}.glb`;
 const CAR_NAMES = [...new Set(CAR_MODELS)];
-const ETHEREAL_NAMES = ["goleling", "squidle", "dragonfly"];
+const ETHEREAL_NAMES = ["goleling", "squidle", "dragonfly", "orc"];
 const DEBRIS_NAMES = ["debris-tire", "debris-door", "debris-bumper"];
 
 /** City combat: loads Kenney cars/debris and the Ethereal monsters, then runs the shared combat layer. */

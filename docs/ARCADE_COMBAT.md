@@ -61,3 +61,16 @@ Acro keeps body rates and manual throttle. In arcade free flight it runs on the 
 - **Game feel.** [Juice and screen-shake principles](https://www.gamedeveloper.com/design/squeezing-more-juice-out-of-your-game-design-).
 
 All bots, barrels, effects and sounds are original and procedural. No third-party game assets are included.
+
+## Flight UI (unobtrusive mode)
+
+While flying, the chrome gets out of the way:
+
+- The header, title, world picker and setup/sound buttons dim to near-invisible. They stay clickable and reappear on hover.
+- Everything hides completely while the cursor is captured.
+- The dock collapses to Pause and Mouse look pills.
+- The compass, speed readout, minimap, combo and score shrink and go translucent. Kill onomatopoeia, score pops and multi-kill cut-ins are deliberately small.
+- Pausing restores the full UI.
+- The third-person Chase camera pulls in rather than passing through walls.
+
+Rendering performance work for the city is documented in [OPTIMIZATION.md](OPTIMIZATION.md).
