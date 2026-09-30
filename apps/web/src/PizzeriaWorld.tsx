@@ -103,7 +103,7 @@ function Ceiling() {
   return (
     <group>
       <mesh position={[0, 6, 0]} receiveShadow><boxGeometry args={[44, 0.1, 36]} /><meshStandardMaterial color="#15192a" roughness={0.9} /></mesh>
-      {[-13, -5, 3, 11].flatMap((x) => [-10, 0, 10].map((z) => <group key={`${x}-${z}`} position={[x, 5.82, z]}><mesh><boxGeometry args={[2.8, 0.08, 0.62]} /><meshStandardMaterial color="#e7d8a7" emissive="#ffdb80" emissiveIntensity={0.7} /></mesh><pointLight color="#ffe0a2" intensity={0.8} distance={7} decay={2} /></group>))}
+      {[-13, -5, 3, 11].flatMap((x) => [-10, 0, 10].map((z) => <mesh key={`${x}-${z}`} position={[x, 5.82, z]}><boxGeometry args={[2.8, 0.08, 0.62]} /><meshStandardMaterial color="#e7d8a7" emissive="#ffdb80" emissiveIntensity={1.8} toneMapped={false} /></mesh>))}
     </group>
   );
 }
@@ -114,9 +114,7 @@ function Stage() {
       <mesh position={[20.25, 3.2, 0]}><boxGeometry args={[0.08, 4.9, 11.8]} /><meshStandardMaterial color="#25152f" roughness={0.86} /></mesh>
       {/* Fabric curtains sit against the collidable stage backdrop and platform. */}
       {[-4.9, 4.9].map((z) => <mesh key={z} position={[18.4, 3.1, z]}><boxGeometry args={[4.1, 4.6, 0.48]} /><meshStandardMaterial color="#8d274b" roughness={0.78} /></mesh>)}
-      <Text font={font} position={[13.18, 4.92, 0]} rotation={[0, -Math.PI / 2, 0]} fontSize={0.52} color="#f9d567" anchorX="center">FREDDY'S FAN STAGE</Text>
-      <spotLight position={[12, 5.4, -5]} target-position={[16.5, 1, 0]} angle={0.38} penumbra={0.6} intensity={15} color="#ffca62" castShadow />
-      <spotLight position={[12, 5.1, 5]} target-position={[16.5, 1, 0]} angle={0.38} penumbra={0.6} intensity={12} color="#f487a8" castShadow />
+      <Text font={font} position={[13.18, 4.92, 0]} rotation={[0, -Math.PI / 2, 0]} fontSize={0.42} color="#f9d567" anchorX="center">FREDDY FAZBEAR'S PIZZA</Text>
       <FreddyModel />
     </group>
   );
@@ -140,8 +138,10 @@ export function PizzeriaWorld({ scenario }: { scenario?: Scenario }) {
     <>
       <color attach="background" args={["#0c1021"]} />
       <fog attach="fog" args={["#0c1021", 20, 68]} />
-      <ambientLight intensity={0.42} color="#9ca5db" />
-      <hemisphereLight args={["#6e6ed4", "#1a1525", 0.85]} />
+      <ambientLight intensity={1.8} color="#f5d8bd" />
+      <hemisphereLight args={["#f0d7c1", "#514d72", 1.5]} />
+      <directionalLight position={[-12, 15, 8]} intensity={2.1} color="#fff0d6" />
+      <pointLight position={[15, 4.4, 0]} intensity={16} distance={20} decay={2} color="#ffc15c" />
       <CheckerFloor />
       <Ceiling />
       {solids.map((solid: Obstacle) => <Solid key={solid.id} {...solid} />)}
@@ -157,7 +157,7 @@ export function PizzeriaWorld({ scenario }: { scenario?: Scenario }) {
       <Text font={font} position={[-13, 4.7, -5.1]} rotation={[0, 0, 0]} fontSize={0.35} color="#bdb5ff" anchorX="center">SECURITY OFFICE</Text>
       <Text font={font} position={[14.5, 4.7, 10.7]} rotation={[0, Math.PI, 0]} fontSize={0.36} color="#e6a3c4" anchorX="center">BACKSTAGE</Text>
       <Text font={font} position={[-16.6, 0.04, 0]} rotation={[-Math.PI / 2, 0, Math.PI / 2]} fontSize={0.55} color="#7ce1b2" anchorX="center">HOME PAD</Text>
-      {PIZZERIA_WORLD.landmarks.map((landmark: { id: string; position: V3; color: string }) => <pointLight key={landmark.id} position={enu(landmark.position)} color={landmark.color} intensity={landmark.id === "stage" ? 1.5 : 0.35} distance={landmark.id === "stage" ? 12 : 4} />)}
+      {PIZZERIA_WORLD.landmarks.map((landmark: { id: string; position: V3; color: string }) => <mesh key={landmark.id} position={enu([landmark.position[0], landmark.position[1], Math.min(landmark.position[2] + 0.2, 5.65)])}><sphereGeometry args={[0.14, 12, 8]} /><meshStandardMaterial color={landmark.color} emissive={landmark.color} emissiveIntensity={2.5} toneMapped={false} /></mesh>)}
     </>
   );
 }
