@@ -212,6 +212,9 @@ const MAX_THRUST = 5.8;
 const MOTOR_TAU = 0.045;
 const YAW_COEFF = 0.04;
 const ARENA_HALF_EXTENT = 25;
+const ARCADE_OUTDOOR_NAV_LIMIT = 30;
+const ARCADE_INDOOR_NAV_LIMIT = 16;
+const ARCADE_VELOCITY_LIMIT = 36;
 
 function rotate(q: Quat, v: V3): V3 {
   const [x, y, z, w] = q;
@@ -327,6 +330,16 @@ export class DroneEnvironment {
       ? freeWorldForMap(this.config.mapId)
       : undefined;
   }
+  /** Arcade is deliberately isolated to player free flight, never missions. */
+  private arcadeFreeFlight(): boolean {
+    return this.config.scenario === "free" && this.config.flightFeel === "arcade";
+  }
+  private navigationLimit(): number {
+    if (!this.arcadeFreeFlight()) return NAV_LIMIT;
+    return this.config.mapId === "pizzeria"
+      ? ARCADE_INDOOR_NAV_LIMIT
+      : ARCADE_OUTDOOR_NAV_LIMIT;
+  }
   private buildWorld(): void {
     this.world?.free();
     this.world = new RAPIER.World({ x: 0, y: 0, z: -9.81 });
@@ -370,8 +383,11 @@ export class DroneEnvironment {
     this.drone = this.world.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic()
         .setTranslation(...this.scenario.spawn)
-        .setLinearDamping(0.42)
-        .setAngularDamping(1.1)
+        .setLinearDamping(this.arcadeFreeFlight() ? 0.18 : 0.42)
+        .setAngularDamping(this.arcadeFreeFlight() ? 0.62 : 1.1)
+        // CCD protects the fast arcade profile from passing through thin map
+        // geometry between fixed simulation steps.
+        .setCcdEnabled(this.arcadeFreeFlight())
         .setAdditionalMassProperties(
           MASS,
           { x: 0, y: 0, z: 0 },
@@ -382,7 +398,7 @@ export class DroneEnvironment {
     this.droneCollider = this.world.createCollider(
       RAPIER.ColliderDesc.cuboid(0.16, 0.16, 0.06)
         .setDensity(0)
-        .setRestitution(0.05)
+        .setRestitution(this.arcadeFreeFlight() ? 0.58 : 0.05)
         .setFriction(0.45),
       this.drone,
     );
@@ -542,14 +558,15 @@ export class DroneEnvironment {
     const bodyRates = unrotate(q, s.angularVelocity);
     let thrust = 0;
     let wantedRates: V3 = [0, 0, 0];
+    const arcade = this.arcadeFreeFlight();
     if (action.kind === "rate") {
       thrust = action.thrust * 4 * MAX_THRUST;
-      wantedRates = mul(action.rates, 4);
+      wantedRates = mul(action.rates, arcade ? 7 : 4);
     } else {
       const velError = sub(action.velocity, s.velocity);
       // Navigation is strictly velocity/yaw input. Mission position guidance is
       // owned by scriptedAction (or a future planner), never this stabilizer.
-      const desiredAccel = clampV(mul(velError, 4.2), 6);
+      const desiredAccel = clampV(mul(velError, arcade ? 8.5 : 4.2), arcade ? 32 : 6);
       const force = add(
         [this.config.wind[0] * 0.14, this.config.wind[1] * 0.14, MASS * 9.81],
         mul(desiredAccel, MASS),
@@ -566,15 +583,18 @@ export class DroneEnvironment {
         0,
         clamp(action.yawRate, -YAW_LIMIT, YAW_LIMIT),
       ]);
-      wantedRates = clampV(add(mul(attitudeBody, 1.7), yawRateBody), 2.5);
+      wantedRates = clampV(
+        add(mul(attitudeBody, arcade ? 5.8 : 1.7), yawRateBody),
+        arcade ? 7 : 2.5,
+      );
       thrust = clamp(dot(force, bodyZ), 0, 4 * MAX_THRUST);
     }
     // Gains match the explicit quadrotor inertia and avoid mixer saturation.
     const rateError = sub(wantedRates, bodyRates);
     const torque = [
-      rateError[0] * 0.004,
-      rateError[1] * 0.004,
-      rateError[2] * 0.0008,
+      rateError[0] * (arcade ? 0.011 : 0.004),
+      rateError[1] * (arcade ? 0.011 : 0.004),
+      rateError[2] * (arcade ? 0.0023 : 0.0008),
     ] as V3;
     const a = ARMS[0]![0],
       c = YAW_COEFF;
@@ -607,7 +627,10 @@ export class DroneEnvironment {
     const dt = this.config.dt;
     const targetMotor = this.controller(requested);
     this.motor = this.motor.map(
-      (m, i) => m + (targetMotor[i]! - m) * clamp(dt / MOTOR_TAU, 0, 1),
+      (m, i) =>
+        m +
+        (targetMotor[i]! - m) *
+          clamp(dt / (this.arcadeFreeFlight() ? 0.025 : MOTOR_TAU), 0, 1),
     );
     const s = this.rawState();
     const q = s.quaternion as Quat;
@@ -647,10 +670,15 @@ export class DroneEnvironment {
     );
     this.world.timestep = dt;
     this.world.step();
+    if (this.arcadeFreeFlight()) {
+      const v = this.drone.linvel();
+      const limited = clampV([v.x, v.y, v.z], ARCADE_VELOCITY_LIMIT);
+      this.drone.setLinvel({ x: limited[0], y: limited[1], z: limited[2] }, true);
+    }
     this.tick++;
     if (requested.kind === "nav") this.yaw += requested.yawRate * dt;
     this.energy += this.motor.reduce((sum, m) => sum + m * m, 0) * dt;
-    const next = this.rawState();
+    let next = this.rawState();
     const d = length(sub(next.target, next.position));
     const progress = clamp((this.lastDistance - d) * 0.7, -1, 1);
     this.lastDistance = d;
@@ -675,8 +703,23 @@ export class DroneEnvironment {
     ) {
       this.collisions++;
       collision = -1;
-      this.terminated = true;
-      this.reason = "collision";
+      if (this.arcadeFreeFlight()) {
+        // Rapier resolves penetration and restitution handles the surface
+        // normal. Add a bounded upward kick so a free-flight crash is fun and
+        // recoverable instead of sticking to furniture or the ground.
+        const rebound = clampV(
+          [-s.velocity[0] * 0.38, -s.velocity[1] * 0.38, Math.max(2.5, Math.abs(s.velocity[2]) * 0.5)],
+          15,
+        );
+        this.drone.setLinvel(
+          { x: rebound[0], y: rebound[1], z: rebound[2] },
+          true,
+        );
+        next = this.rawState();
+      } else {
+        this.terminated = true;
+        this.reason = "collision";
+      }
     }
     const touchedSurface = tags.some(
       (tag) => tag === "ground" || tag === "pad",
@@ -793,7 +836,7 @@ export class DroneEnvironment {
     this.ensure();
     assertAction(action);
     const requested = copyAction(action);
-    const applied = boundedAction(action);
+    const applied = boundedAction(action, this.navigationLimit());
     const start = this.tick;
     const observation = this.observe();
     const total: RewardComponents = {
@@ -985,7 +1028,7 @@ function assertAction(a: Action): void {
   if (!Number.isFinite(scalar))
     throw new Error("Action scalar must be finite.");
 }
-function boundedAction(a: Action): Action {
+function boundedAction(a: Action, navigationLimit = NAV_LIMIT): Action {
   if (a.kind === "rate")
     return {
       kind: "rate",
@@ -994,7 +1037,7 @@ function boundedAction(a: Action): Action {
     };
   return {
     kind: "nav",
-    velocity: a.velocity.map((v) => clamp(v, -NAV_LIMIT, NAV_LIMIT)) as V3,
+    velocity: a.velocity.map((v) => clamp(v, -navigationLimit, navigationLimit)) as V3,
     yawRate: clamp(a.yawRate, -YAW_LIMIT, YAW_LIMIT),
   };
 }

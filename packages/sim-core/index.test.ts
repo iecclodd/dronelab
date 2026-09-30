@@ -317,6 +317,57 @@ describe("DroneEnvironment", () => {
     env.dispose();
   });
 
+  it("keeps omitted free-flight configs research-limited and makes arcade response materially faster", () => {
+    const research = new DroneEnvironment(config({ scenario: "free", maxSeconds: 10 }));
+    const arcade = new DroneEnvironment(
+      config({ scenario: "free", flightFeel: "arcade", maxSeconds: 10 }),
+    );
+    const command = { kind: "nav" as const, velocity: [18, 0, 2] as [number, number, number], yawRate: 0 };
+    let researchResult = research.step(command, 1);
+    let arcadeResult = arcade.step(command, 1);
+    for (let i = 0; i < 119; i++) {
+      researchResult = research.step(command, 1);
+      arcadeResult = arcade.step(command, 1);
+    }
+    expect(research.config.flightFeel).toBe("research");
+    expect(researchResult.transition.appliedAction).toMatchObject({ velocity: [3, 0, 2] });
+    expect(arcadeResult.transition.appliedAction).toMatchObject({ velocity: [18, 0, 2] });
+    expect(arcade.state().velocity[0]).toBeGreaterThan(research.state().velocity[0] * 2.5);
+    for (let i = 0; i < 240; i++) arcadeResult = arcade.step(command, 1);
+    expect(arcade.state().velocity[0]).toBeGreaterThan(18);
+    const beforeBrake = arcade.state().velocity[0];
+    for (let i = 0; i < 120; i++)
+      arcadeResult = arcade.step(
+        { kind: "nav", velocity: [0, 0, 2], yawRate: 0 },
+        1,
+      );
+    expect(Math.abs(arcade.state().velocity[0])).toBeLessThan(beforeBrake * 0.5);
+    expect(arcade.state().velocity.every(Number.isFinite)).toBe(true);
+    expect(Math.hypot(...arcade.state().velocity)).toBeLessThanOrEqual(36.0001);
+    research.dispose();
+    arcade.dispose();
+  });
+
+  it("counts an arcade free-flight impact once, bounces, and keeps flying", () => {
+    const env = new DroneEnvironment(
+      config({ scenario: "free", flightFeel: "arcade", maxSeconds: 10 }),
+    );
+    const hangar = FREE_WORLD.obstacles.find((o) => o.id === "home-hangar")!;
+    const drone = (env as any).drone;
+    drone.setTranslation(
+      { x: hangar.position[0], y: hangar.position[1], z: hangar.position[2] },
+      true,
+    );
+    drone.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    const hit = env.step({ kind: "rate", rates: [0, 0, 0], thrust: 0.42 }, 2);
+    expect(hit.state.collisions).toBe(1);
+    expect(hit.state.terminated).toBe(false);
+    expect(hit.state.reason).toBe("");
+    expect(hit.state.velocity.every(Number.isFinite)).toBe(true);
+    expect(Math.hypot(...hit.state.velocity)).toBeLessThanOrEqual(36.0001);
+    env.dispose();
+  });
+
   it("builds Aster Valley from the shared spawn, bounds, and obstacle boxes", () => {
     const scenario = createFreeScenario(FREE_WORLD);
     expect(scenario.spawn).toEqual([0, 0, 2]);

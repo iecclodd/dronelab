@@ -4,6 +4,11 @@ export const ACTION_REPEAT = 4;
 export type V3 = [number, number, number];
 export type Q4 = [number, number, number, number];
 export type ScenarioId = "hover" | "gates" | "landing" | "free";
+/**
+ * Research keeps the reproducible mission dynamics. Arcade is opt-in and is
+ * only interpreted by the free-flight simulator.
+ */
+export type FlightFeel = "research" | "arcade";
 export type ControllerId =
   | "manual"
   | "rate"
@@ -22,6 +27,8 @@ export interface SimConfig {
   scenario: ScenarioId;
   /** Free-flight map selection. Omitted configurations use Aster Valley. */
   mapId?: "valley" | "pizzeria";
+  /** Omitted historical configs retain the reproducible research dynamics. */
+  flightFeel?: FlightFeel;
   seed: number;
   wind: V3;
   noise: number;
@@ -31,6 +38,7 @@ export interface SimConfig {
 }
 export const DEFAULT_CONFIG: SimConfig = {
   scenario: "hover",
+  flightFeel: "research",
   seed: 42,
   wind: [0, 0, 0],
   noise: 0,
@@ -228,6 +236,7 @@ export function validateConfig(value: unknown): SimConfig {
     !c ||
     !["hover", "gates", "landing", "free"].includes(c.scenario) ||
     (c.mapId !== undefined && !["valley", "pizzeria"].includes(c.mapId)) ||
+    (c.flightFeel !== undefined && !["research", "arcade"].includes(c.flightFeel)) ||
     !Number.isInteger(c.seed) ||
     c.seed < 0 ||
     c.seed > 0xffffffff

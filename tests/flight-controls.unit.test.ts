@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   acroAction,
   assistedAction,
+  assistedSpeeds,
   deadzone,
   flightForward,
   horizontalForward,
+  keyboardFlightAxes,
   mode2Axes,
 } from "../apps/web/src/flight-controls";
 
@@ -39,6 +41,23 @@ describe("flight control helpers", () => {
     });
   });
 
+  it("uses fast map-aware arcade setpoints while omitted profiles retain research speeds", () => {
+    expect(assistedSpeeds()).toEqual({ cruise: 7, boost: 13 });
+    expect(assistedSpeeds("arcade", "valley")).toEqual({ cruise: 18, boost: 30 });
+    expect(assistedSpeeds("arcade", "pizzeria")).toEqual({ cruise: 10, boost: 16 });
+    expect(
+      assistedAction([0, 0, 0, 1], 0, {
+        forward: 1,
+        right: 0,
+        up: 0,
+        yaw: 0,
+        boost: true,
+        flightFeel: "arcade",
+        mapId: "valley",
+      }),
+    ).toMatchObject({ kind: "nav", velocity: [30, 0, 0] });
+  });
+
   it("preserves FLU rate axes and clamps manual throttle", () => {
     expect(acroAction({ roll: 2, pitch: 0.5, yaw: -2 }, 1.4)).toEqual({
       kind: "rate", rates: [1, 0.5, -1], thrust: 1,
@@ -62,5 +81,21 @@ describe("flight control helpers", () => {
       pitch: 0.75,
     });
     expect(mode2Axes([0.4, 0, 0, 0], [0.4, 0, 0, 0], 0)).toMatchObject({ yaw: 0 });
+  });
+
+  it("maps every keyboard flight axis, arrows, and both Shift keys without opposing-axis leaks", () => {
+    expect(keyboardFlightAxes(new Set(["KeyW", "KeyD", "Space", "KeyQ", "ControlLeft"]))).toEqual({
+      forward: 1, right: 1, up: 1, yaw: 1, boost: true,
+    });
+    expect(keyboardFlightAxes(new Set(["KeyS", "KeyA", "ShiftRight", "KeyE"]))).toEqual({
+      forward: -1, right: -1, up: -1, yaw: -1, boost: false,
+    });
+    expect(keyboardFlightAxes(new Set(["ArrowUp", "ArrowRight", "ShiftLeft"]))).toMatchObject({
+      forward: 1, right: 1, up: -1,
+    });
+    expect(keyboardFlightAxes(new Set(["Space", "ShiftLeft", "ShiftRight"]))).toMatchObject({ up: 0 });
+    expect(keyboardFlightAxes(new Set(["KeyW", "KeyS", "KeyA", "KeyD", "KeyQ", "KeyE"]))).toMatchObject({
+      forward: 0, right: 0, yaw: 0,
+    });
   });
 });

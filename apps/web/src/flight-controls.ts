@@ -1,16 +1,21 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
-import type { Action, ControllerId, PhysicalState, Q4, V3 } from "../../../packages/contracts";
+import { ACTION_REPEAT, DT, type Action, type ControllerId, type FlightFeel, type PhysicalState, type Q4, type V3 } from "../../../packages/contracts";
 
 export type FlightLook = { yaw: number; pitch: number };
 
 const DEADZONE = 0.12;
 const MAX_LOOK_PITCH = (80 * Math.PI) / 180;
-const NAV_SPEED = 7;
-const BOOST_SPEED = 13;
+const RESEARCH_NAV_SPEED = 7;
+const RESEARCH_BOOST_SPEED = 13;
+const ARCADE_OUTDOOR_NAV_SPEED = 18;
+const ARCADE_OUTDOOR_BOOST_SPEED = 30;
+const ARCADE_INDOOR_NAV_SPEED = 10;
+const ARCADE_INDOOR_BOOST_SPEED = 16;
 const HOVER_THRUST = 0.42;
-const THROTTLE_STEP = 0.025;
+const THROTTLE_RATE = 0.38;
 const BASE_MOUSE_SENSITIVITY = 0.0024;
 const DEFAULT_CAMERA_TILT = 15;
+const ACTION_SEND_PERIOD = DT * ACTION_REPEAT * 2;
 
 export const clamp = (value: number, low: number, high: number) =>
   Math.max(low, Math.min(high, value));
@@ -77,13 +82,34 @@ export function horizontalForward(
   return [east, north, 0];
 }
 
+/** Player-facing setpoints. The simulator independently enforces its profile cap. */
+export function assistedSpeeds(
+  flightFeel: FlightFeel = "research",
+  mapId?: "valley" | "pizzeria",
+) {
+  if (flightFeel !== "arcade")
+    return { cruise: RESEARCH_NAV_SPEED, boost: RESEARCH_BOOST_SPEED };
+  return mapId === "pizzeria"
+    ? { cruise: ARCADE_INDOOR_NAV_SPEED, boost: ARCADE_INDOOR_BOOST_SPEED }
+    : { cruise: ARCADE_OUTDOOR_NAV_SPEED, boost: ARCADE_OUTDOOR_BOOST_SPEED };
+}
+
 export function assistedAction(
   quaternion: Q4,
   lookYaw: number,
-  input: { forward: number; right: number; up: number; yaw: number; boost?: boolean },
+  input: {
+    forward: number;
+    right: number;
+    up: number;
+    yaw: number;
+    boost?: boolean;
+    flightFeel?: FlightFeel;
+    mapId?: "valley" | "pizzeria";
+  },
   lookPitch = 0,
 ): Action {
-  const speed = input.boost ? BOOST_SPEED : NAV_SPEED;
+  const speeds = assistedSpeeds(input.flightFeel, input.mapId);
+  const speed = input.boost ? speeds.boost : speeds.cruise;
   const forward = horizontalForward(quaternion, lookYaw, lookPitch);
   const right: V3 = [forward[1], -forward[0], 0];
   return {
@@ -144,10 +170,13 @@ type FlightControlsOptions = {
   calibrationRef: MutableRefObject<number[]>;
   cameraMode?: "FPV" | "Chase" | "Orbit";
   cameraTilt?: number;
+  flightFeel?: FlightFeel;
+  mapId?: "valley" | "pizzeria";
 };
 
 const flightKey = new Set([
-  "KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE", "Space",
+  "KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE", "ArrowUp",
+  "ArrowDown", "ArrowLeft", "ArrowRight", "Space",
   "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight",
 ]);
 
@@ -156,8 +185,28 @@ const formOwnsInput = (target: EventTarget | null) => {
   return !!element?.closest("input, select, textarea, [contenteditable='true']");
 };
 
-const keyAxis = (keys: Set<string>, positive: string, negative: string) =>
-  (keys.has(positive) ? 1 : 0) - (keys.has(negative) ? 1 : 0);
+const keyAxis = (
+  keys: ReadonlySet<string>,
+  positive: string | readonly string[],
+  negative: string | readonly string[],
+) => {
+  const contains = (bindings: string | readonly string[]) =>
+    (typeof bindings === "string" ? [bindings] : bindings).some((binding) =>
+      keys.has(binding),
+    );
+  return (contains(positive) ? 1 : 0) - (contains(negative) ? 1 : 0);
+};
+
+/** Keyboard bindings for a standard six-DOF FPV control surface. */
+export function keyboardFlightAxes(keys: ReadonlySet<string>) {
+  return {
+    forward: keyAxis(keys, ["KeyW", "ArrowUp"], ["KeyS", "ArrowDown"]),
+    right: keyAxis(keys, ["KeyD", "ArrowRight"], ["KeyA", "ArrowLeft"]),
+    up: keyAxis(keys, "Space", ["ShiftLeft", "ShiftRight"]),
+    yaw: keyAxis(keys, "KeyQ", "KeyE"),
+    boost: keys.has("ControlLeft") || keys.has("ControlRight"),
+  };
+}
 
 export function useFlightControls({
   state,
@@ -171,6 +220,8 @@ export function useFlightControls({
   calibrationRef,
   cameraMode = "FPV",
   cameraTilt = DEFAULT_CAMERA_TILT,
+  flightFeel = "research",
+  mapId,
 }: FlightControlsOptions) {
   const lookRef = useRef<FlightLook>({ yaw: 0, pitch: 0 });
   const keys = useRef(new Set<string>());
@@ -366,33 +417,50 @@ export function useFlightControls({
   }, [clearFlight, enabled, resetControls]);
 
   useEffect(() => {
-    const tick = () => {
-      if (!enabled || modeRef.current !== "realtime" || !["manual", "rate"].includes(controller)) return;
+    let frame = 0;
+    let previousTime: number | undefined;
+    let sinceLastAction = ACTION_SEND_PERIOD;
+    const tick = (now: number) => {
+      const elapsed = previousTime === undefined ? 0 : Math.min((now - previousTime) / 1000, 0.1);
+      previousTime = now;
+      sinceLastAction += elapsed;
+      if (sinceLastAction < ACTION_SEND_PERIOD) {
+        frame = window.requestAnimationFrame(tick);
+        return;
+      }
+      sinceLastAction = 0;
+      if (!enabled || modeRef.current !== "realtime" || !["manual", "rate"].includes(controller)) {
+        frame = window.requestAnimationFrame(tick);
+        return;
+      }
       const keysNow = keys.current;
       const pad = navigator.getGamepads?.().find(Boolean);
       const gamepad = mode2Axes(pad?.axes ?? [], calibrationRef.current);
+      const keyboard = keyboardFlightAxes(keysNow);
       const assisted = {
-        forward: keyAxis(keysNow, "KeyW", "KeyS") || gamepad.pitch,
-        right: keyAxis(keysNow, "KeyD", "KeyA") || gamepad.roll,
-        up: keyAxis(keysNow, "Space", "ShiftLeft") || keyAxis(keysNow, "Space", "ShiftRight") || gamepad.throttle,
-        yaw: keyAxis(keysNow, "KeyQ", "KeyE") || gamepad.yaw,
-        boost: keysNow.has("ControlLeft") || keysNow.has("ControlRight"),
+        forward: keyboard.forward || gamepad.pitch,
+        right: keyboard.right || gamepad.roll,
+        up: keyboard.up || gamepad.throttle,
+        yaw: keyboard.yaw || gamepad.yaw,
+        boost: keyboard.boost,
+        flightFeel,
+        mapId,
       };
       let action: Action;
       let active = false;
       if (controller === "rate") {
-        const vertical = keyAxis(keysNow, "Space", "ShiftLeft") || keyAxis(keysNow, "Space", "ShiftRight");
+        const vertical = keyboard.up;
         if (vertical) {
-          throttleRef.current = clamp(throttleRef.current + vertical * THROTTLE_STEP, 0, 1);
+          throttleRef.current = clamp(throttleRef.current + vertical * THROTTLE_RATE * Math.max(elapsed, ACTION_SEND_PERIOD), 0, 1);
           setThrottle(throttleRef.current);
         } else if (Math.abs(gamepad.throttle) > 0) {
           throttleRef.current = clamp(HOVER_THRUST + gamepad.throttle * 0.5, 0, 1);
           setThrottle(throttleRef.current);
         }
         const rateInput = {
-          roll: keyAxis(keysNow, "KeyD", "KeyA") || gamepad.roll,
-          pitch: keyAxis(keysNow, "KeyW", "KeyS") || gamepad.pitch,
-          yaw: keyAxis(keysNow, "KeyQ", "KeyE") || gamepad.yaw,
+          roll: keyboard.right || gamepad.roll,
+          pitch: keyboard.forward || gamepad.pitch,
+          yaw: keyboard.yaw || gamepad.yaw,
         };
         action = acroAction(rateInput, throttleRef.current);
         callbacks.current.sendAction(action);
@@ -407,10 +475,11 @@ export function useFlightControls({
         if (active || previousActive.current) callbacks.current.sendAction(action);
       }
       previousActive.current = active;
+      frame = window.requestAnimationFrame(tick);
     };
-    const id = window.setInterval(tick, 65);
-    return () => window.clearInterval(id);
-  }, [calibrationRef, cameraTilt, controller, enabled, modeRef, state]);
+    frame = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(frame);
+  }, [calibrationRef, cameraTilt, controller, enabled, flightFeel, mapId, modeRef, state]);
 
   return { lookRef, locked, dragging, throttle, engageLook, resetLook, resetControls, sensitivity, setSensitivity };
 }
