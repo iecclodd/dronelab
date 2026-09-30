@@ -1,6 +1,6 @@
 import { RelayError, type JsonObject } from "./relay.js";
 
-export type ProviderName = "openai" | "anthropic" | "gemini";
+export type ProviderName = "openai" | "anthropic" | "gemini" | "local";
 export interface ProviderTool { name: string; description: string; inputSchema: JsonObject; }
 export interface ProviderMessage { role: "user" | "assistant"; content: string; }
 export interface ToolInvocation { id: string; name: string; args: JsonObject; }
@@ -52,7 +52,28 @@ export const geminiAdapter = {
   toolResult: (name: string, result: unknown): JsonObject => ({ functionResponse: { name, response: { result } } }),
 };
 
-export interface ProviderConfig { key?: string; model?: string; timeoutMs?: number; }
+/** OpenAI-compatible /v1/chat/completions adapter used by Ollama and LM Studio. */
+export const localOpenAIAdapter = {
+  request: (input: ProviderRequest): JsonObject => ({
+    model: input.model,
+    messages: input.messages,
+    tools: input.tools.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } })),
+    tool_choice: "auto",
+    max_tokens: 1024,
+    stream: false,
+  }),
+  calls: (response: JsonObject): ToolInvocation[] => {
+    const message = ((response.choices as JsonObject[] | undefined)?.[0]?.message as JsonObject | undefined);
+    const calls = message?.tool_calls;
+    return Array.isArray(calls) ? calls.filter((item): item is JsonObject => !!item && typeof item === "object")
+      .map((item, index) => {
+        const fn = item.function as JsonObject | undefined;
+        return { id: String(item.id ?? `local-${index}`), name: String(fn?.name ?? ""), args: parseArgs(fn?.arguments) };
+      }).filter((call) => call.name.length > 0) : [];
+  },
+};
+
+export interface ProviderConfig { key?: string; model?: string; timeoutMs?: number; baseUrl?: string; }
 const adapterFor = (provider: ProviderName) => provider === "openai" ? openAIAdapter : provider === "anthropic" ? anthropicAdapter : geminiAdapter;
 
 async function readJsonLimited(response: Response, maxBytes = 2 * 1024 * 1024): Promise<JsonObject> {
@@ -65,17 +86,18 @@ async function readJsonLimited(response: Response, maxBytes = 2 * 1024 * 1024): 
   try { return JSON.parse(new TextDecoder().decode(bytes)) as JsonObject; } catch { throw new RelayError("provider_invalid_response", "provider did not return JSON", 502); }
 }
 export async function invokeProvider(provider: ProviderName, config: ProviderConfig, request: Omit<ProviderRequest, "model">): Promise<{ calls: ToolInvocation[]; raw: JsonObject }> {
-  if (!config.key || !config.model) throw new RelayError("provider_unconfigured", `${provider} is not configured on this server`, 503);
+  if (!config.model || (provider !== "local" && !config.key) || (provider === "local" && !config.baseUrl)) throw new RelayError("provider_unconfigured", `${provider} is not configured on this server`, 503);
   const timeout = AbortSignal.timeout(config.timeoutMs ?? 20_000);
-  const adapter = adapterFor(provider);
+  const adapter = provider === "local" ? localOpenAIAdapter : adapterFor(provider);
   const payload = adapter.request({ ...request, model: config.model });
-  const target = provider === "openai" ? "https://api.openai.com/v1/responses" : provider === "anthropic" ? "https://api.anthropic.com/v1/messages" : `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.model)}:generateContent`;
+  const target = provider === "openai" ? "https://api.openai.com/v1/responses" : provider === "anthropic" ? "https://api.anthropic.com/v1/messages" : provider === "gemini" ? `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.model)}:generateContent` : new URL("v1/chat/completions", config.baseUrl!).toString();
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (provider === "openai") headers.authorization = `Bearer ${config.key}`;
-  if (provider === "anthropic") { headers["x-api-key"] = config.key; headers["anthropic-version"] = "2023-06-01"; }
-  if (provider === "gemini") headers["x-goog-api-key"] = config.key;
+  if (provider === "anthropic") { headers["x-api-key"] = config.key!; headers["anthropic-version"] = "2023-06-01"; }
+  if (provider === "gemini") headers["x-goog-api-key"] = config.key!;
+  if (provider === "local" && config.key) headers.authorization = `Bearer ${config.key}`;
   let response: Response;
-  try { response = await fetch(target, { method: "POST", headers, body: JSON.stringify(payload), signal: timeout }); }
+  try { response = await fetch(target, { method: "POST", headers, body: JSON.stringify(payload), signal: timeout, redirect: "error" }); }
   catch { throw new RelayError("provider_unavailable", `${provider} request failed or timed out`, 502); }
   const raw = await readJsonLimited(response);
   if (!response.ok) throw new RelayError("provider_error", `${provider} returned ${response.status}`, 502);

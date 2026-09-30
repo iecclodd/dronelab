@@ -144,6 +144,9 @@ export interface PolicyCheckpoint {
   trainingSeeds: number[];
   validationSeeds: number[];
   testSeeds: number[];
+  /** Exact held-out configurations and source lineage for imported/autonomous training. */
+  evaluationConfigs?: SimConfig[];
+  datasetSources?: { runId: string; seed: number; split: string; source: string }[];
   scenario: ScenarioId;
   config: SimConfig;
   mean: number[];

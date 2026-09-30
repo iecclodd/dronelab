@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { dispatch } from "./agent-tools";
+import { validateAction } from "../../../packages/contracts";
 
 type Pair = {
   sessionId: string;
@@ -15,6 +16,10 @@ export function ConnectionPanel({ onClose }: { onClose: () => void }) {
     [provider, setProvider] = useState("openai"),
     [prompt, setPrompt] = useState("Fly the hover mission."),
     [trace, setTrace] = useState<string[]>([]);
+  const [policySource, setPolicySource] = useState("policies");
+  const [policySeconds, setPolicySeconds] = useState(5);
+  const [policyRunning, setPolicyRunning] = useState(false);
+  const policyAbort = useRef<AbortController | undefined>(undefined);
   const abort = useRef<AbortController | undefined>(undefined);
   const pairRef = useRef<Pair | undefined>(undefined);
   const connection = useRef<{ url: string; secret: string }>({
@@ -23,6 +28,7 @@ export function ConnectionPanel({ onClose }: { onClose: () => void }) {
   });
   const log = (s: string) => setTrace((old) => [...old.slice(-11), s]);
   const disconnect = async () => {
+    policyAbort.current?.abort();
     abort.current?.abort();
     const p = pairRef.current;
     pairRef.current = undefined;
@@ -42,6 +48,7 @@ export function ConnectionPanel({ onClose }: { onClose: () => void }) {
   };
   useEffect(
     () => () => {
+      policyAbort.current?.abort();
       abort.current?.abort();
     },
     [],
@@ -253,6 +260,41 @@ export function ConnectionPanel({ onClose }: { onClose: () => void }) {
       setStatus(error instanceof Error ? error.message : String(error));
     }
   };
+  const runPolicy = async () => {
+    if (!pair || policyAbort.current) return;
+    const control = new AbortController();
+    policyAbort.current = control;
+    setPolicyRunning(true);
+    const c = connection.current;
+    let episodeId: string | undefined;
+    try {
+      let observation = await dispatch("reset_policy_session", { scenario: "hover", seed: 30001, maxSeconds: policySeconds });
+      episodeId = observation.episodeId;
+      for (let decision = 0; decision < 900 && !observation.terminated && !observation.truncated; decision++) {
+        if (control.signal.aborted) break;
+        setStatus(`${policySource === "connectome" ? "Connectome" : "Local policy"} · step ${observation.step}`);
+        const response = await fetch(`${c.url}/${policySource}/action`, {
+          method: "POST", signal: control.signal,
+          headers: { Authorization: `Bearer ${c.secret}`, "X-DroneLab-Pair-Token": pair.browserToken, "X-DroneLab-Session-Id": pair.sessionId, "Content-Type": "application/json" },
+          body: JSON.stringify({ expectedStep: observation.step, observation: observation.observation }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error?.message ?? "Policy bridge failed");
+        if (control.signal.aborted) break;
+        const action = validateAction(result.action);
+        window.dronelab.policySandbox.annotate(episodeId!, policySource, result.metadata);
+        observation = await dispatch("step_policy", { episodeId, expectedStep: observation.step, action });
+        if (decision === 0) log(`${policySource}: ${result.metadata?.model ?? "external model"} · ${result.metadata?.datasetVersion ?? "unspecified dataset"}`);
+      }
+      setStatus(control.signal.aborted ? "Policy evaluation stopped" : `Policy evaluation saved · ${observation.reason || "budget reached"}`);
+    } catch (error) {
+      setStatus(control.signal.aborted ? "Policy evaluation stopped" : error instanceof Error ? error.message : String(error));
+    } finally {
+      if (episodeId) await dispatch("finish_policy_session", { episodeId }).catch(() => undefined);
+      policyAbort.current = undefined;
+      setPolicyRunning(false);
+    }
+  };
   return (
     <div
       className="modal"
@@ -278,13 +320,19 @@ export function ConnectionPanel({ onClose }: { onClose: () => void }) {
           agents, connect a configured DroneLab relay. Provider keys stay on
           that server.
         </p>
+        <details>
+          <summary>API keys and local setup</summary>
+          <p>Configure provider keys in the relay’s .env file. Never paste a provider key into this page. For Ollama or LM Studio, run the relay on the same computer as the model server. A remote relay’s localhost refers to that remote server.</p>
+          <p>Start the app and relay locally if browser local-network permissions block a hosted page from pairing with localhost.</p>
+          <a href="https://github.com/iecclodd/dronelab/blob/codex/ai-training-integrations/docs/ai-mcp.md" target="_blank" rel="noreferrer">Setup guide and environment variables ↗</a>
+        </details>
         <label>
           Relay URL
           <input
             aria-label="Relay URL"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            placeholder="https://relay.example.com"
+            placeholder="http://127.0.0.1:8787"
             disabled={!!pair}
           />
         </label>
@@ -312,12 +360,13 @@ export function ConnectionPanel({ onClose }: { onClose: () => void }) {
               Session <code>{pair.sessionId}</code>
             </p>
             <details>
-              <summary>MCP client pairing</summary>
+              <summary>Terminal / MCP client pairing</summary>
               <p>
                 Use the relay MCP URL with this session ID. Set the short-lived
                 pair token in the X-DroneLab-Pair-Token header.
               </p>
               <code style={{ overflowWrap: "anywhere" }}>{pair.mcpToken}</code>
+              <p>Use examples/relay-policy-cli.py from your terminal with this session ID and pair token in environment variables. It calls the simulation API; this page does not execute shell commands.</p>
             </details>
             <label>
               Provider
@@ -328,6 +377,7 @@ export function ConnectionPanel({ onClose }: { onClose: () => void }) {
                 <option value="openai">OpenAI Responses</option>
                 <option value="anthropic">Anthropic Messages</option>
                 <option value="gemini">Gemini</option>
+                <option value="local">Local · Ollama / LM Studio</option>
               </select>
             </label>
             <label>
@@ -342,7 +392,22 @@ export function ConnectionPanel({ onClose }: { onClose: () => void }) {
               The selected provider receives your instruction and state
               observations. No images are sent by this planner flow.
             </p>
-            <button onClick={() => void plan()}>Ask planner</button>
+            <button disabled={policyRunning} onClick={() => void plan()}>Ask planner</button>
+            <hr />
+            <div className="eyebrow">TEST AN EXTERNAL POLICY</div>
+            <p>Run a pretrained model or fruit fly connectome adapter in a separate research Hover session. State observations go to the configured local runtime. Completed trajectories appear in Flight journal.</p>
+            <label>Policy runtime
+              <select value={policySource} disabled={policyRunning} onChange={e => setPolicySource(e.target.value)}>
+                <option value="policies">Local policy · PyTorch / ONNX / custom</option>
+                <option value="connectome">Fruit fly connectome adapter</option>
+              </select>
+            </label>
+            <label>Evaluation seconds
+              <input type="number" min="1" max="30" value={policySeconds} disabled={policyRunning} onChange={e => setPolicySeconds(Number(e.target.value))} />
+            </label>
+            <p>The connectome option requires a running neural model and an explicit sensory/motor mapping. No brain dataset is downloaded by the game.</p>
+            <button disabled={policyRunning || !Number.isFinite(policySeconds) || policySeconds < 1 || policySeconds > 30} onClick={() => void runPolicy()}>Run policy evaluation</button>
+            <button disabled={!policyRunning} onClick={() => policyAbort.current?.abort()}>Stop policy evaluation</button>
           </>
         )}
         {trace.map((line, i) => (

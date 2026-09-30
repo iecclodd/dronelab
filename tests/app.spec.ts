@@ -2,7 +2,7 @@ import type { RunRecord } from "../packages/contracts";
 import { expect, test, type Page } from "@playwright/test";
 
 async function open(page: Page) {
-  await page.goto("http://127.0.0.1:5182/");
+  await page.goto(`http://127.0.0.1:${process.env.DRONELAB_TEST_PREVIEW_PORT ?? 5182}/`);
   await page.waitForFunction(() =>
     Boolean(window.dronelab?.sim && window.droneTools),
   );
@@ -189,7 +189,7 @@ test("failed experiment is a failed job and an old job cannot cancel flight", as
 });
 
 test("AI Lab and browser-owned starts keep the research flight profile", async ({ page }) => {
-  await page.goto("http://127.0.0.1:5182/#experiment");
+  await page.goto(`http://127.0.0.1:${process.env.DRONELAB_TEST_PREVIEW_PORT ?? 5182}/#experiment`);
   await page.waitForFunction(() => Boolean(window.dronelab?.sim && !window.dronelab.getState().busy));
   expect(await page.evaluate(() => window.dronelab.getState().config.flightFeel)).toBe("research");
   await page.getByLabel("Episode budget").fill("1");

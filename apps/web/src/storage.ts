@@ -6,6 +6,10 @@ import type {
   Transition,
 } from "../../../packages/contracts";
 import { validateCheckpoint } from "../../../packages/learning";
+import {
+  buildDatasetExport,
+  type DatasetManifest,
+} from "../../../packages/training-data";
 interface LabDB extends DBSchema {
   runs: { key: string; value: RunRecord };
   chunks: {
@@ -198,6 +202,15 @@ export function exportRun(run: RunRecord) {
     zip as BlobPart,
     "application/zip",
   );
+}
+/** Exports leakage-safe, whole-episode datasets without any local credentials. */
+export function exportDataset(
+  runs: RunRecord[],
+  options?: { batchId?: string; exportedAt?: string },
+): DatasetManifest {
+  const artifact = buildDatasetExport(runs, options);
+  download(artifact.fileName, artifact.zip as BlobPart, "application/zip");
+  return artifact.manifest;
 }
 export function validateRun(run: RunRecord) {
   if (run.manifest.schema !== "run-v1")

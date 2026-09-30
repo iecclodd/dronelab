@@ -15,7 +15,10 @@ import { useFlightControls } from "./flight-controls";
 import { createDroneAudio, type DroneAudio } from "./drone-audio";
 import { combatSfx } from "./combat-store";
 import { ConnectionPanel } from "./ConnectionPanel";
+import { DatasetPanel } from "./DatasetPanel";
+import { assertDatasetEligible, generateCurriculum, splitForSeed } from "../../../packages/training-data";
 import { SimulationClient } from "./simulation";
+import { PolicySandbox } from "./policy-sandbox";
 import { TrainingClient, type TrainingProgress } from "./learning";
 import {
   appendChunk,
@@ -40,7 +43,7 @@ import {
   type V3,
 } from "../../../packages/contracts";
 
-import { wilson } from "../../../packages/learning";
+import { checkpointHash, wilson } from "../../../packages/learning";
 
 type View = "Fly" | "Experiment" | "Review";
 const missions: { id: ScenarioId; label: string; detail: string }[] = [
@@ -91,6 +94,7 @@ export default function App() {
   const sim = useRef<SimulationClient | undefined>(undefined);
   const batch = useRef<SimulationClient | undefined>(undefined);
   const trainer = useRef<TrainingClient | undefined>(undefined);
+  const policySandbox = useRef<PolicySandbox | undefined>(undefined);
   const stateRef = useRef<PhysicalState | undefined>(undefined);
   const ghostRef = useRef<PhysicalState | undefined>(undefined);
   const captureRef = useRef<
@@ -216,6 +220,8 @@ export default function App() {
     sim.current = a;
     batch.current = b;
     trainer.current = t;
+    const sandbox = new PolicySandbox(refresh);
+    policySandbox.current = sandbox;
     const unsubscribeBatch = b.subscribe((message) => {
       if (active && message.type === "progress") {
         const p = message.payload as {
@@ -277,6 +283,7 @@ export default function App() {
       a.dispose();
       b.dispose();
       t.dispose();
+      sandbox.dispose();
       if (sim.current === a) sim.current = undefined;
       if (batch.current === b) batch.current = undefined;
       if (trainer.current === t) trainer.current = undefined;
@@ -485,79 +492,90 @@ export default function App() {
       if (alive.current) setBusy(false);
     }
   };
-  const train = async (): Promise<PolicyCheckpoint | void> => {
-    const fixed = { ...config, scenario: "hover" as ScenarioId, flightFeel: "research" as const };
+  const evaluatePolicy = async (checkpoint: PolicyCheckpoint, configs: SimConfig[] = checkpoint.evaluationConfigs ?? checkpoint.testSeeds.map(seed => ({ ...checkpoint.config, flightFeel: "research" as const, seed }))) => {
+    setEvaluation({});
+    const all: RunRecord[] = [];
+    for (const control of ["scripted", "random", "learned"] as ControllerId[]) {
+      if (cancelled.current) throw new Error("Evaluation cancelled");
+      setBatchProgress(`Evaluating ${control} on held-out seeds…`);
+      const result = await batch.current!.request<RunRecord[]>("batch", {
+        configs, control, checkpoint: control === "learned" ? checkpoint : undefined,
+      });
+      if (cancelled.current) throw new Error("Evaluation cancelled");
+      all.push(...result);
+      setEvaluation(old => ({ ...old, [control]: result }));
+      for (const run of result) {
+        run.manifest = { ...run.manifest, purpose: "held-out-evaluation", evaluatedPolicy: checkpoint.id };
+        await saveRun(run);
+      }
+    }
+    await refresh();
+    return all;
+  };
+  const fitDataset = async (data: RunRecord[], fixed: SimConfig, evaluationConfigs?: SimConfig[]) => {
+    assertDatasetEligible(data);
+    const demonstrations = data.filter(r => splitForSeed(r.config.seed) !== "test");
+    if (cancelled.current) throw new Error("Training cancelled");
+    const trained = await trainer.current!.start(
+      demonstrations.map(r => ({ seed: r.config.seed, transitions: r.transitions })), fixed,
+      p => { if (!cancelled.current) setTraining(old => [...old, p]); },
+    );
+    if (cancelled.current) throw new Error("Training cancelled");
+    const content = {
+      ...trained,
+      ...(evaluationConfigs ? { evaluationConfigs, testSeeds: evaluationConfigs.map(c => c.seed) } : {}),
+      datasetSources: demonstrations.map(r => ({ runId: r.id, seed: r.config.seed, split: splitForSeed(r.config.seed)!, source: String(r.manifest.source ?? r.controller).slice(0, 256) })),
+    };
+    const checkpoint: PolicyCheckpoint = { ...content, hash: checkpointHash(content) };
+    await savePolicy(checkpoint);
+    await refresh();
+    setPolicyId(checkpoint.id);
+    return checkpoint;
+  };
+  const trainFromDataset = async (data: RunRecord[]) => {
+    if (busy) return;
     try {
-      cancelled.current = false;
-      setBusy(true);
-      setTraining([]);
-      setBatchProgress("Collecting demonstrations…");
-      const seeds = [
-        ...Array.from({ length: 12 }, (_, i) => 10001 + i),
-        ...Array.from({ length: 4 }, (_, i) => 20001 + i),
-      ];
-      const configs = seeds.map((seed) => ({ ...fixed, seed }));
+      setBusy(true); cancelled.current = false; setTraining([]); setError("");
+      setBatchProgress("Training from selected whole episodes…");
+      assertDatasetEligible(data);
+      const checkpoint = await fitDataset(data, data[0].config);
+      setError("Imported-data policy saved. Run held-out evaluation to measure transfer into DroneLab.");
+      return checkpoint;
+    } catch (e) { if (!cancelled.current) report(e); }
+    finally { if (alive.current) setBusy(false); }
+  };
+  const train = async (): Promise<PolicyCheckpoint | void> => {
+    if (busy) return;
+    const fixed = { ...config, scenario: config.scenario === "free" ? "hover" as const : config.scenario, flightFeel: "research" as const, maxSeconds: Math.min(config.maxSeconds, 30) };
+    try {
+      cancelled.current = false; setBusy(true); setTraining([]); setError("");
+      setBatchProgress("Collecting randomized research demonstrations…");
+      const curriculum = generateCurriculum(fixed);
+      const batchId = crypto.randomUUID();
       const data = await batch.current!.request<RunRecord[]>("batch", {
-        configs,
-        control: "scripted",
+        configs: curriculum.filter(e => e.split !== "test").map(e => e.config), control: "scripted",
       });
       if (cancelled.current) return;
-      const checkpoint = await trainer.current!.start(
-        data.map((r) => ({ seed: r.config.seed, transitions: r.transitions })),
-        fixed,
-        (p) => {
-          if (!cancelled.current) setTraining((old) => [...old, p]);
-        },
-      );
-      if (cancelled.current) return;
-      await savePolicy(checkpoint);
-      await refresh();
-      setPolicyId(checkpoint.id);
-      setError("Policy saved. Evaluate it on held-out seeds.");
-      return checkpoint;
-    } catch (e) {
-      if (!cancelled.current) report(e);
-    } finally {
-      if (alive.current) setBusy(false);
-    }
-  };
-  const evaluate = async (): Promise<RunRecord[] | void> => {
-    if (!policy) {
-      setError("Choose a trained policy to evaluate.");
-      return;
-    }
-    try {
-      cancelled.current = false;
-      setBusy(true);
-      setEvaluation({});
-      const configs = Array.from({ length: 8 }, (_, i) => ({
-        ...policy.config,
-        flightFeel: "research" as const,
-        seed: 30001 + i,
-      }));
-      const all: RunRecord[] = [];
-      for (const control of [
-        "scripted",
-        "random",
-        "learned",
-      ] as ControllerId[]) {
-        const result = await batch.current!.request<RunRecord[]>("batch", {
-          configs,
-          control,
-          checkpoint: control === "learned" ? policy : undefined,
-        });
-        if (cancelled.current) return;
-        all.push(...result);
-        setEvaluation((old) => ({ ...old, [control]: result }));
-        await Promise.all(result.map(saveRun));
+      for (const run of data) {
+        run.manifest = { ...run.manifest, batchId, source: "auto-train-scripted", curriculum: "wind-noise-delay-v1", split: splitForSeed(run.config.seed) };
+        await saveRun(run);
       }
       await refresh();
-      return all;
-    } catch (e) {
-      if (!cancelled.current) report(e);
-    } finally {
-      if (alive.current) setBusy(false);
-    }
+      setBatchProgress("Training behavior-cloning policy…");
+      const checkpoint = await fitDataset(data, fixed, curriculum.filter(e => e.split === "test").map(e => e.config));
+      await evaluatePolicy(checkpoint);
+      if (!cancelled.current) setError("Auto train complete. Demonstrations, policy and held-out results are saved on this device.");
+      return checkpoint;
+    } catch (e) { if (!cancelled.current) report(e); }
+    finally { if (alive.current) setBusy(false); }
+  };
+  const evaluate = async (): Promise<RunRecord[] | void> => {
+    if (!policy || busy) { if (!policy) setError("Choose a trained policy to evaluate."); return; }
+    try {
+      cancelled.current = false; setBusy(true); setError("");
+      return await evaluatePolicy(policy);
+    } catch (e) { if (!cancelled.current) report(e); }
+    finally { if (alive.current) setBusy(false); }
   };
   const playback = (run: RunRecord, index: number) => {
     const epoch = ++playbackEpoch.current;
@@ -605,6 +623,7 @@ export default function App() {
   useEffect(() => {
     (window as any).dronelab = {
       sim: sim.current,
+      policySandbox: policySandbox.current,
       batch: batch.current,
       trainer: trainer.current,
       getState: () => ({
@@ -858,6 +877,8 @@ export default function App() {
                   {batchProgress || "Preparing experiment…"}
                 </p>
               )}
+              <DatasetPanel runs={runs} busy={busy} refresh={refresh} onTrain={trainFromDataset} onPolicy={setPolicyId} report={report} />
+              <hr />
               <Experiment
                 config={config}
                 setConfig={setConfig}
@@ -881,6 +902,9 @@ export default function App() {
             </>
           )}{" "}
           {view === "Review" && (
+            <>
+            <DatasetPanel runs={runs} busy={busy} refresh={refresh} onTrain={trainFromDataset} onPolicy={setPolicyId} report={report} />
+            <hr />
             <Review
               runs={runs}
               selected={selected}
@@ -892,6 +916,7 @@ export default function App() {
                 setSelected(undefined);
               }}
             />
+            </>
           )}
         </aside>
         <section className="stage" id="flight-stage" aria-label="Flight world">
@@ -1160,11 +1185,10 @@ function Experiment({
       <hr />
       <div className="eyebrow">BEHAVIOR CLONING</div>
       <p className="copy">
-        Collect scripted Hover demos on seeds 10001–10012 and validation seeds
-        20001–20004.
+        Auto train collects 12 demonstrations and 4 validation episodes with seeded wind, noise and sensor delay, fits a navigation policy, then compares three controllers on 8 held-out seeds. Free flight uses Hover. This is simulated behavior cloning, not real-flight validation.
       </p>
       <button className="primary wide" disabled={busy} onClick={onTrain}>
-        Train policy
+        Auto train
       </button>
       {training.length > 0 && (
         <div className="chart">
@@ -1267,7 +1291,7 @@ function Review({
   const transition = selected?.transitions[scrub];
   return (
     <>
-      <p className="copy">Saved trajectories stay on this device.</p>
+      <p className="copy">Saved trajectories and imported datasets stay on this device. Each transition includes observations, requested/applied actions, rewards and terminal flags.</p>
       <p className="copy">
         {storage} · {runs.length}/64 saved runs. Browser storage may be evicted;
         export important runs.
@@ -1286,7 +1310,8 @@ function Review({
                 <span>{new Date(r.createdAt).toLocaleString()}</span>
                 <small>
                   {r.metrics.success ? "SUCCESS" : r.metrics.reason} ·{" "}
-                  {n(r.metrics.reward, 1)} reward
+                  {n(r.metrics.reward, 1)} reward · {r.transitions.length} transitions · {r.config.flightFeel ?? "research"}
+                  {r.manifest.source ? ` · ${String(r.manifest.source)}` : ""}
                 </small>
               </button>
               <button

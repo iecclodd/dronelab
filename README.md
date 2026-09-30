@@ -14,6 +14,16 @@ The browser stores up to 64 runs and records up to 14,400 transitions per run. A
 
 The Connect AI panel is optional. It requires an operator-configured HTTPS relay and short-lived browser pairing; the static game, experiments, recording, replay, and training work when the relay is absent. Provider keys remain server-side and are never frontend `VITE_*` values.
 
+## AI training integrations (isolated branch)
+
+AI Lab now starts with **Bring your model / dataset**. Import a validated `bc-v1` checkpoint or `dronelab-exchange-v1` external dataset, select whole journal episodes for behavior cloning, and export split datasets with an importable exchange file. Keep PyTorch/ONNX weights in a local runtime and use the policy bridge to test them without converting them to the browser's small BC network.
+
+**Auto train** collects 12 scripted demonstrations plus 4 validation episodes under reproducible wind/noise/delay variation, saves them in Flight journal, trains a policy, and compares scripted/random/learned controllers on 8 held-out configurations. Checkpoints retain these exact evaluation configurations and training-source lineage. This generates varied simulation data, not certified real-world flight data.
+
+**Connect AI** supports existing server-side provider keys plus OpenAI-compatible Ollama/LM Studio planners, a terminal MCP client, and local policy/connectome action bridges. External policies step a separate research worker and leave the player's game session unchanged. The connectome bridge requires a real local neural runtime and an explicit sensory/readout mapping; its included example is clearly labelled as a protocol demonstration.
+
+Read [local setup and terminal usage](docs/ai-mcp.md), [external dataset formats](docs/external-datasets.md), [simulator/dataset/connectome research](docs/AI_RESEARCH.md), and the [optimization proposal awaiting approval](docs/OPTIMIZATION_PROPOSAL.md). This branch changes no player controls, physics, rendering, maps or game assets.
+
 ## Develop
 
 From this directory:
@@ -51,7 +61,7 @@ It requires Node 20+, a high-entropy `DRONELAB_RELAY_SECRET`, and exact allowed 
 
 Current arcade release: [executed validation, agent roles and limitations](docs/ANIME_FPV_VALIDATION.md).
 
-The latest executed checks and limitations are in [VALIDATION.md](docs/VALIDATION.md). The repository includes a real [trained checkpoint](examples/hover-bc-checkpoint.json), its [evaluation](examples/evaluation.json), a [scripted hover run](examples/hover-run.json), and [browser compatibility measurements](examples/compatibility.json). These are deliberate small examples, not synthetic training results. The checkpoint was trained in Chromium with TFJS CPU on 661 demonstration samples; its held-out success rate was 5/8 versus 8/8 for scripted control. Use the website's Train policy button to create and save a new policy on your device.
+AI integration checks and limits are in [AI_INTEGRATION_VALIDATION.md](docs/AI_INTEGRATION_VALIDATION.md); earlier game validation is in [VALIDATION.md](docs/VALIDATION.md). The repository includes a real [trained checkpoint](examples/hover-bc-checkpoint.json), its [evaluation](examples/evaluation.json), a [scripted hover run](examples/hover-run.json), and [browser compatibility measurements](examples/compatibility.json). These are deliberate small examples, not synthetic training results. The checkpoint was trained in Chromium with TFJS CPU on 661 demonstration samples; its held-out success rate was 5/8 versus 8/8 for scripted control. Use the website's Auto train button to create and save a new policy on your device.
 
 Explore keyboard: mouse aims (the drone follows the camera), W/A/S/D move relative to the camera, Space/C rise and sink, Shift dashes (tap) or boosts (hold), F or left click fires, Q/E turn and V cycles the camera. Practice missions keep W/S forward/back, A/D strafe, Space/Shift climb/descend, Q/E yaw and F boost. Acro changes W/S to pitch, A/D to roll and Space/Shift to throttle. R retries, V (or C outside Explore) cycles cameras, P pauses and Escape releases mouse capture and pauses. A standard Mode 2 gamepad layout is supported. The game pauses when the window loses focus; resume explicitly. Free-flight recordings last up to two minutes before retry. Valley limits are ±200 m and 100 m altitude; pizzeria limits are ±25 m and 6 m altitude. Open `#experiment` or `#review` to link directly to a view. Touch-only flight controls are not provided.
 

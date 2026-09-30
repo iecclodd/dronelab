@@ -16,10 +16,19 @@ async function resetDatabase(page: import("@playwright/test").Page) {
 test.beforeEach(async ({ page }) => {
   await page.goto("/tests/worker-harness.html");
   // Warm Vite's first-time dependency optimization before evaluating a test.
-  await page.evaluate(async () => {
-    await import("/apps/web/src/storage.ts");
-    await import("/packages/sim-core/index.ts");
-  });
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await page.evaluate(async () => {
+        await import("/apps/web/src/storage.ts");
+        await import("/packages/sim-core/index.ts");
+      });
+      break;
+    } catch (error) {
+      // Vite can reload the harness once when discovering a new dependency.
+      if (attempt >= 2 || !String(error).includes("Execution context was destroyed")) throw error;
+      await page.waitForLoadState("load");
+    }
+  }
   await resetDatabase(page);
   await page.reload();
 });
@@ -247,8 +256,8 @@ test("stores and reloads a clearly synthetic checkpoint fixture byte-for-byte", 
       createdAt: "2026-05-01T00:00:00.000Z",
       trainingSeed: 1,
       trainingSeeds: [1],
-      validationSeeds: [2],
-      testSeeds: [3],
+      validationSeeds: [20000],
+      testSeeds: [30000],
       scenario: "hover" as const,
       config: DEFAULT_CONFIG,
       mean: Array(20).fill(0),

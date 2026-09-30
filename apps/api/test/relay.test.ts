@@ -1,13 +1,25 @@
 import { once } from "node:events";
+import http from "node:http";
 import { describe, expect, it } from "vitest";
-import { BrowserRelay, RelayError, type RelayConfig } from "../src/relay.js";
-import { anthropicAdapter, geminiAdapter, openAIAdapter } from "../src/providers.js";
-import { createRelayApp } from "../src/index.js";
+import { BrowserRelay, RelayError, configFromEnv, type RelayConfig } from "../src/relay.js";
+import { anthropicAdapter, geminiAdapter, localOpenAIAdapter, openAIAdapter } from "../src/providers.js";
+import { BRIDGE_SESSION_CALL_LIMIT, createRelayApp } from "../src/index.js";
+import { connectomeRequestSchema } from "../src/connectome.js";
 
 const config: RelayConfig = { secret: "s".repeat(32), allowedOrigins: new Set(["https://app.example.test"]), sessionTtlMs: 5_000, commandTtlMs: 50, pollTimeoutMs: 20, maxQueue: 2, maxResultBytes: 1024, maxSessions: 2, providerCallsPerHour: 60 };
 const relay = () => new BrowserRelay(config);
 
 describe("BrowserRelay", () => {
+  it("only accepts loopback endpoints for local inference", () => {
+    const env = { DRONELAB_RELAY_SECRET: "s".repeat(32), DRONELAB_ALLOWED_ORIGINS: "https://app.example.test", DRONELAB_LOCAL_MODEL_URL: "http://127.0.0.1:11434", DRONELAB_LOCAL_MODEL: "qwen" };
+    expect(configFromEnv(env).localModel).toMatchObject({ baseUrl: "http://127.0.0.1:11434/", model: "qwen" });
+    expect(() => configFromEnv({ ...env, DRONELAB_LOCAL_MODEL_URL: "http://model.example.test" })).toThrow(/loopback/);
+  });
+  it("requires a fresh state-v1 observation and a bounded nav action shape", () => {
+    const observation = { version: "state-v1", sourceStep: 3, deliveryStep: 4, sampleTime: 1, deliveryTime: 1, position: [0, 0, 0], velocity: [0, 0, 0], quaternion: [0, 0, 0, 1], angularVelocity: [0, 0, 0], relativeTarget: [0, 0, 0], range: [0, 0, 0, 0, 0, 0], battery: 1, priorAction: { kind: "nav", velocity: [0, 0, 0], yawRate: 0 }, elapsed: 1 };
+    expect(connectomeRequestSchema.parse({ expectedStep: 4, observation })).toMatchObject({ expectedStep: 4 });
+    expect(() => connectomeRequestSchema.parse({ expectedStep: 5, observation })).toThrow(/deliveryStep/);
+  });
   it("adopts the worker authority at pairing and returns a 15-second heartbeat deadline", async () => {
     const subject = relay(); const session = subject.createSession({ generation: 7, epoch: 12 });
     expect(session).toMatchObject({ generation: 7, authorityEpoch: 12 });
@@ -75,6 +87,30 @@ describe("BrowserRelay", () => {
 });
 
 describe("HTTP relay safeguards", () => {
+  it("allows a complete 30-second policy horizon before the session bridge cap", () => {
+    // 30 seconds × 120 Hz / four-tick policy decisions = 900 calls.
+    expect(BRIDGE_SESSION_CALL_LIMIT).toBe(1_024);
+    expect(BRIDGE_SESSION_CALL_LIMIT).toBeGreaterThanOrEqual(900);
+  });
+  it("requires browser pairing and rate-limits local policy bridge calls", async () => {
+    const bridge = http.createServer((_req, res) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ action: { kind: "nav", velocity: [0, 0, 0], yawRate: 0 }, metadata: { datasetVersion: "test", model: "fixture", mappingVersion: "v1" } })); });
+    bridge.listen(0, "127.0.0.1"); await once(bridge, "listening");
+    const bridgeAddress = bridge.address(); if (!bridgeAddress || typeof bridgeAddress === "string") throw new Error("bridge bind failed");
+    const secret = "b".repeat(32); const relayApp = createRelayApp({ ...config, secret, bridgeCallsPerHour: 1, policy: { url: `http://127.0.0.1:${bridgeAddress.port}/` } });
+    relayApp.server.listen(0, "127.0.0.1"); await once(relayApp.server, "listening");
+    const address = relayApp.server.address(); if (!address || typeof address === "string") throw new Error("bind failed");
+    const root = `http://127.0.0.1:${address.port}`;
+    const headers = { authorization: `Bearer ${secret}`, origin: "https://app.example.test", "content-type": "application/json" };
+    const body = { expectedStep: 4, observation: { version: "state-v1", sourceStep: 3, deliveryStep: 4, sampleTime: 1, deliveryTime: 1, position: [0, 0, 0], velocity: [0, 0, 0], quaternion: [0, 0, 0, 1], angularVelocity: [0, 0, 0], relativeTarget: [0, 0, 0], range: [0, 0, 0, 0, 0, 0], battery: 1, priorAction: { kind: "nav", velocity: [0, 0, 0], yawRate: 0 }, elapsed: 1 } };
+    try {
+      expect((await fetch(`${root}/policies/action`, { method: "POST", headers, body: JSON.stringify(body) })).status).toBe(401);
+      const created = await fetch(`${root}/sessions`, { method: "POST", headers, body: JSON.stringify({ generation: 1, authorityEpoch: 0 }) });
+      const session = await created.json() as { sessionId: string; browserToken: string };
+      const paired = { ...headers, "x-dronelab-session-id": session.sessionId, "x-dronelab-pair-token": session.browserToken };
+      expect((await fetch(`${root}/policies/action`, { method: "POST", headers: paired, body: JSON.stringify(body) })).status).toBe(200);
+      expect((await fetch(`${root}/policies/action`, { method: "POST", headers: paired, body: JSON.stringify(body) })).status).toBe(429);
+    } finally { await relayApp.close(); await new Promise<void>((resolve, reject) => bridge.close((error) => error ? reject(error) : resolve())); }
+  });
   it("reserves the browser session during concurrent MCP initialize and permits provider preflight headers", async () => {
     const secret = "t".repeat(32);
     const relayApp = createRelayApp({ ...config, secret });
@@ -131,5 +167,9 @@ describe("provider native conversions", () => {
     expect(geminiAdapter.request({ model: "configured", messages: [{ role: "user", content: "go" }], tools })).toMatchObject({ generationConfig: { maxOutputTokens: 1024 }, tools: [{ functionDeclarations: [{ name: "set_mission", parametersJsonSchema: tools[0].inputSchema }] }] });
     expect(geminiAdapter.calls({ candidates: [{ content: { parts: [{ functionCall: { id: "g1", name: "set_mission", args: { mission: "hover" } } }] } }] })).toEqual([{ id: "g1", name: "set_mission", args: { mission: "hover" } }]);
     expect(geminiAdapter.toolResult("set_mission", { ok: true })).toMatchObject({ functionResponse: { name: "set_mission" } });
+  });
+  it("uses OpenAI-compatible local tool call shapes", () => {
+    expect(localOpenAIAdapter.request({ model: "llama", messages: [{ role: "user", content: "go" }], tools })).toMatchObject({ model: "llama", stream: false, tools: [{ type: "function", function: { name: "set_mission", parameters: tools[0].inputSchema } }] });
+    expect(localOpenAIAdapter.calls({ choices: [{ message: { tool_calls: [{ id: "l1", function: { name: "set_mission", arguments: '{"mission":"hover"}' } }] } }] })).toEqual([{ id: "l1", name: "set_mission", args: { mission: "hover" } }]);
   });
 });
