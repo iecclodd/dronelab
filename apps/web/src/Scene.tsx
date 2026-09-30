@@ -3,6 +3,7 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, Grid, Line, Text } from "@react-three/drei";
 import * as THREE from "three";
 import type { PhysicalState, Scenario, V3 } from "../../../packages/contracts";
+import type { FlightLook } from "./flight-controls";
 export type CameraMode = "Chase" | "FPV" | "Orbit";
 export const visual = (v: V3): [number, number, number] => [v[0], v[2], -v[1]];
 const basis = new THREE.Quaternion().setFromAxisAngle(
@@ -12,9 +13,11 @@ const basis = new THREE.Quaternion().setFromAxisAngle(
 function Drone({
   state,
   ghost = false,
+  hidden = false,
 }: {
   state: MutableRefObject<PhysicalState | undefined>;
   ghost?: boolean;
+  hidden?: boolean;
 }) {
   const ref = useRef<THREE.Group>(null);
   const rotors = useRef<THREE.Group[]>([]);
@@ -33,64 +36,78 @@ function Drone({
     });
   });
   return (
-    <group ref={ref} name={ghost ? "ghost" : "drone"}>
-      <mesh castShadow>
-        <boxGeometry args={[0.45, 0.13, 0.3]} />
+    <group ref={ref} name={ghost ? "ghost" : "drone"} visible={!hidden}>
+      <mesh castShadow position={[-0.03, 0.01, 0]}>
+        <boxGeometry args={[0.36, 0.11, 0.25]} />
         <meshStandardMaterial
-          color={ghost ? "#4bebdf" : "#263231"}
+          color={ghost ? "#4bebdf" : "#1d2425"}
           transparent={ghost}
           opacity={ghost ? 0.4 : 1}
-          metalness={0.55}
-          roughness={0.38}
+          metalness={0.7}
+          roughness={0.3}
         />
       </mesh>
-      <mesh position={[0.06, 0.1, 0]} castShadow>
-        <boxGeometry args={[0.22, 0.07, 0.19]} />
-        <meshStandardMaterial color="#efb347" />
+      <mesh position={[-0.05, 0.105, 0]} castShadow>
+        <boxGeometry args={[0.22, 0.035, 0.18]} />
+        <meshStandardMaterial color="#303b3a" metalness={0.35} />
       </mesh>
       {[
-        [-0.3, -0.3],
-        [-0.3, 0.3],
-        [0.3, -0.3],
-        [0.3, 0.3],
+        [-0.33, -0.33],
+        [-0.33, 0.33],
+        [0.33, -0.33],
+        [0.33, 0.33],
       ].map(([x, z], i) => (
         <group key={i}>
-          <mesh rotation={[0, x * z > 0 ? -Math.PI / 4 : Math.PI / 4, 0]}>
-            <boxGeometry args={[0.85, 0.045, 0.055]} />
-            <meshStandardMaterial color="#293736" />
+          <mesh rotation={[0, x * z > 0 ? -Math.PI / 4 : Math.PI / 4, 0]} castShadow>
+            <boxGeometry args={[0.88, 0.032, 0.04]} />
+            <meshStandardMaterial color="#151b1d" metalness={0.72} roughness={0.24} />
           </mesh>
-          <mesh position={[x, 0.02, z]}>
-            <cylinderGeometry args={[0.055, 0.055, 0.12, 12]} />
-            <meshStandardMaterial color="#303c3b" />
+          <mesh position={[x, 0.035, z]} castShadow>
+            <cylinderGeometry args={[0.06, 0.06, 0.1, 12]} />
+            <meshStandardMaterial color="#252d2d" metalness={0.55} />
           </mesh>
           <group
-            position={[x, 0.095, z]}
+            position={[x, 0.105, z]}
             ref={(el) => {
               if (el) rotors.current[i] = el;
             }}
           >
-            <mesh>
-              <boxGeometry args={[0.38, 0.012, 0.05]} />
-              <meshStandardMaterial
-                color={i < 2 ? "#a2beb9" : "#f2b349"}
-                transparent
-                opacity={0.85}
-              />
-            </mesh>
+            {[0, (Math.PI * 2) / 3, (Math.PI * 4) / 3].map((rotation) => (
+              <mesh key={rotation} rotation={[0, rotation, 0]} position={[0.115, 0, 0]}>
+                <boxGeometry args={[0.27, 0.009, 0.055]} />
+                <meshStandardMaterial
+                  color={i % 2 ? "#f4aa36" : "#70e3d5"}
+                  transparent
+                  opacity={0.9}
+                />
+              </mesh>
+            ))}
           </group>
-          <mesh position={[x, -0.14, z]}>
+          <mesh position={[x, -0.13, z]}>
             <boxGeometry args={[0.04, 0.17, 0.04]} />
             <meshStandardMaterial color="#24302f" />
           </mesh>
         </group>
       ))}
-      <mesh position={[0.245, 0, 0]} rotation={[0, 0, Math.PI / 2]}>
-        <cylinderGeometry args={[0.045, 0.045, 0.04, 12]} />
+      <mesh position={[0.04, 0.135, 0]} rotation={[0, 0, Math.PI / 2]} castShadow>
+        <boxGeometry args={[0.1, 0.045, 0.22]} />
+        <meshStandardMaterial color="#ed9f3c" roughness={0.38} />
+      </mesh>
+      <mesh position={[0.21, 0.025, 0]} rotation={[0, 0, Math.PI / 2]} castShadow>
+        <cylinderGeometry args={[0.06, 0.06, 0.09, 16]} />
         <meshStandardMaterial
           color="#4ae4d4"
           emissive="#2aa896"
-          emissiveIntensity={0.5}
+          emissiveIntensity={0.75}
         />
+      </mesh>
+      <mesh position={[0.255, 0.025, 0]} rotation={[0, 0, Math.PI / 2]}>
+        <cylinderGeometry args={[0.037, 0.037, 0.095, 16]} />
+        <meshStandardMaterial color="#101719" metalness={0.5} />
+      </mesh>
+      <mesh position={[-0.2, 0.12, 0]} rotation={[0, 0, -Math.PI / 8]}>
+        <cylinderGeometry args={[0.018, 0.018, 0.36, 8]} />
+        <meshStandardMaterial color="#29302f" metalness={0.35} />
       </mesh>
     </group>
   );
@@ -293,11 +310,17 @@ function World({ scenario }: { scenario?: Scenario }) {
 function Rig({
   state,
   cameraMode,
+  lookRef,
+  fov,
+  cameraTilt,
   onFps,
   onCapture,
 }: {
   state: MutableRefObject<PhysicalState | undefined>;
   cameraMode: CameraMode;
+  lookRef: MutableRefObject<FlightLook>;
+  fov: number;
+  cameraTilt: number;
   onFps: (fps: number) => void;
   onCapture: (
     fn: (() => { step: number; dataUrl: string }) | undefined,
@@ -306,6 +329,11 @@ function Rig({
   const { camera, gl, scene } = useThree();
   const goal = useMemo(() => new THREE.Vector3(), []);
   const look = useMemo(() => new THREE.Vector3(), []);
+  const forward = useMemo(() => new THREE.Vector3(), []);
+  const up = useMemo(() => new THREE.Vector3(), []);
+  const body = useMemo(() => new THREE.Quaternion(), []);
+  const yaw = useMemo(() => new THREE.Quaternion(), []);
+  const pitch = useMemo(() => new THREE.Quaternion(), []);
   const tracker = useRef({ frames: 0, start: performance.now() });
   const step = useRef(0);
   useEffect(() => {
@@ -341,6 +369,14 @@ function Rig({
     });
     return () => onCapture(undefined);
   }, [onCapture, gl, scene, camera]);
+  useEffect(() => {
+    const perspective = camera as THREE.PerspectiveCamera;
+    const nextFov = cameraMode === "FPV" ? fov : 57;
+    if (perspective.fov !== nextFov) {
+      perspective.fov = nextFov;
+      perspective.updateProjectionMatrix();
+    }
+  }, [camera, cameraMode, fov]);
   useFrame((_, dt) => {
     const s = state.current;
     if (s) {
@@ -352,14 +388,20 @@ function Rig({
           camera.position.lerp(goal, 1 - Math.exp(-dt * 4));
           camera.lookAt(look.add(new THREE.Vector3(0, 0.3, 0)));
         } else {
-          const q = new THREE.Quaternion(...s.quaternion);
-          q.premultiply(basis).multiply(basis.clone().invert());
-          goal.set(0.45, 0.1, 0).applyQuaternion(q).add(look);
-          camera.position.copy(goal);
-          camera.up.set(0, 1, 0).applyQuaternion(q);
-          camera.lookAt(
-            new THREE.Vector3(10, 0, 0).applyQuaternion(q).add(look),
+          body.set(...s.quaternion).premultiply(basis).multiply(basis.clone().invert());
+          goal.set(0.27, 0.035, 0).applyQuaternion(body).add(look);
+          const flightLook = lookRef.current;
+          yaw.setFromAxisAngle(new THREE.Vector3(0, 1, 0), flightLook.yaw);
+          pitch.setFromAxisAngle(
+            new THREE.Vector3(0, 0, 1),
+            flightLook.pitch + THREE.MathUtils.degToRad(cameraTilt),
           );
+          body.multiply(yaw).multiply(pitch);
+          camera.position.copy(goal);
+          up.set(0, 1, 0).applyQuaternion(body);
+          forward.set(1, 0, 0).applyQuaternion(body);
+          camera.up.copy(up);
+          camera.lookAt(goal.add(forward));
         }
       }
     }
@@ -391,6 +433,9 @@ export function FlightScene({
   cameraMode,
   path,
   ghost,
+  lookRef,
+  fov = 90,
+  cameraTilt = 15,
   onFps,
   onCapture,
 }: {
@@ -399,11 +444,17 @@ export function FlightScene({
   cameraMode: CameraMode;
   path: V3[];
   ghost?: MutableRefObject<PhysicalState | undefined>;
+  lookRef?: MutableRefObject<FlightLook>;
+  /** Vertical FPV field of view in degrees. */
+  fov?: number;
+  /** Upward camera mount tilt in degrees. */
+  cameraTilt?: number;
   onFps: (fps: number) => void;
   onCapture: (
     fn: (() => { step: number; dataUrl: string }) | undefined,
   ) => void;
 }) {
+  const defaultLook = useRef<FlightLook>({ yaw: 0, pitch: 0 });
   return (
     <Canvas
       shadows={{ type: THREE.PCFShadowMap }}
@@ -412,7 +463,7 @@ export function FlightScene({
       gl={{ antialias: true, preserveDrawingBuffer: true }}
     >
       <World scenario={scenario} />
-      <Drone state={state} />
+      <Drone state={state} hidden={cameraMode === "FPV"} />
       {ghost && <Drone state={ghost} ghost />}
       {path.length > 1 && (
         <Line
@@ -426,6 +477,9 @@ export function FlightScene({
       <Rig
         state={state}
         cameraMode={cameraMode}
+        lookRef={lookRef ?? defaultLook}
+        fov={fov}
+        cameraTilt={cameraTilt}
         onFps={onFps}
         onCapture={onCapture}
       />
