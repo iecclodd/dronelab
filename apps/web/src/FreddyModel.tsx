@@ -1,32 +1,36 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 
 type Vec3 = [number, number, number];
-type Materials = Record<string, THREE.Material>;
+type MaterialSet = {
+  fur: THREE.Material; tan: THREE.Material; dark: THREE.Material; cavity: THREE.Material;
+  metal: THREE.Material; brass: THREE.Material; tooth: THREE.Material; blue: THREE.Material;
+  pupil: THREE.Material; outline: THREE.Material; dispose: () => void;
+};
 
 /** An original, primitive-built stage animatronic; it contains no extracted game asset. */
 export function FreddyModel() {
-  const materials = useMemo<Materials>(() => {
-    // Tiny deterministic textile speckles keep the brown shell from reading as smooth plastic.
-    const pixels = new Uint8Array(8 * 8 * 3);
+  const materials = useMemo<MaterialSet>(() => {
+    // Light neutral textile speckles preserve the brown albedo instead of multiplying it into black.
+    const pixels = new Uint8Array(8 * 8 * 4);
     for (let i = 0; i < 64; i += 1) {
-      const shade = 92 + ((i * 37 + Math.floor(i / 8) * 19) % 42);
-      pixels.set([shade + 24, shade - 3, shade - 24], i * 3);
+      const shade = 205 + ((i * 37 + Math.floor(i / 8) * 19) % 31);
+      pixels.set([shade, shade, shade, 255], i * 4);
     }
-    const fabricMap = new THREE.DataTexture(pixels, 8, 8, THREE.RGBFormat);
+    const fabricMap = new THREE.DataTexture(pixels, 8, 8, THREE.RGBAFormat);
     fabricMap.colorSpace = THREE.SRGBColorSpace;
     fabricMap.wrapS = fabricMap.wrapT = THREE.RepeatWrapping;
     fabricMap.repeat.set(3, 3);
     fabricMap.needsUpdate = true;
     // Four nearest-filtered luminance stops give every lit surface a clean cel-shaded band.
     const bands = new Uint8Array([
-      28, 28, 28, 92, 92, 92, 176, 176, 176, 255, 255, 255,
+      28, 28, 28, 255, 92, 92, 92, 255, 176, 176, 176, 255, 255, 255, 255, 255,
     ]);
-    const gradientMap = new THREE.DataTexture(bands, 4, 1, THREE.RGBFormat);
+    const gradientMap = new THREE.DataTexture(bands, 4, 1, THREE.RGBAFormat);
     gradientMap.minFilter = THREE.NearestFilter;
     gradientMap.magFilter = THREE.NearestFilter;
     gradientMap.needsUpdate = true;
-    return {
+    const sharedMaterials = {
       fur: new THREE.MeshToonMaterial({ color: "#8b542f", map: fabricMap, gradientMap }),
       tan: new THREE.MeshToonMaterial({ color: "#d19a68", gradientMap }),
       dark: new THREE.MeshToonMaterial({ color: "#151419", gradientMap }),
@@ -38,7 +42,16 @@ export function FreddyModel() {
       pupil: new THREE.MeshBasicMaterial({ color: "#080b0d" }),
       outline: new THREE.MeshBasicMaterial({ color: "#160f14", side: THREE.BackSide }),
     };
+    return {
+      ...sharedMaterials,
+      dispose: () => {
+        fabricMap.dispose();
+        gradientMap.dispose();
+        Object.values(sharedMaterials).forEach((material) => material.dispose());
+      },
+    };
   }, []);
+  useEffect(() => () => materials.dispose(), [materials]);
   const teeth = [-0.33, 0, 0.33];
   return <group position={[16.8, 0.45, 0]} rotation={[0, -Math.PI / 2, 0]}>
     <mesh position={[0, 1.88, 0]} scale={[1.045, 1.035, 1.045]} material={materials.outline}><capsuleGeometry args={[0.73, 1.05, 8, 16]} /></mesh>
@@ -90,7 +103,7 @@ export function FreddyModel() {
   </group>;
 }
 
-function Arm({ position, rotation, materials }: { position: Vec3; rotation: Vec3; materials: Materials }) {
+function Arm({ position, rotation, materials }: { position: Vec3; rotation: Vec3; materials: Pick<MaterialSet, "fur" | "metal" | "dark"> }) {
   return <group position={position} rotation={rotation}>
     <mesh material={materials.metal}><sphereGeometry args={[0.36, 16, 12]} /></mesh><mesh position={[0, -0.09, 0.02]} material={materials.dark}><torusGeometry args={[0.3, 0.06, 8, 14]} /></mesh>
     <mesh position={[0, -0.61, 0]} castShadow material={materials.fur}><cylinderGeometry args={[0.28, 0.34, 0.92, 16]} /></mesh><mesh position={[0, -1.1, 0.06]} material={materials.metal}><sphereGeometry args={[0.29, 14, 10]} /></mesh>
@@ -98,7 +111,7 @@ function Arm({ position, rotation, materials }: { position: Vec3; rotation: Vec3
   </group>;
 }
 
-function Leg({ position, rotation, materials }: { position: Vec3; rotation: Vec3; materials: Materials }) {
+function Leg({ position, rotation, materials }: { position: Vec3; rotation: Vec3; materials: Pick<MaterialSet, "fur" | "metal" | "dark"> }) {
   return <group position={position} rotation={rotation}>
     <mesh material={materials.metal}><sphereGeometry args={[0.31, 14, 10]} /></mesh><mesh position={[0, -0.42, 0]} castShadow material={materials.fur}><cylinderGeometry args={[0.32, 0.36, 0.65, 16]} /></mesh>
     <mesh position={[0, -0.8, 0.08]} material={materials.dark}><torusGeometry args={[0.28, 0.06, 8, 14]} /></mesh><mesh position={[0, -1.02, 0.22]} scale={[1.22, 0.58, 1.5]} castShadow material={materials.fur}><sphereGeometry args={[0.38, 14, 10]} /></mesh>
