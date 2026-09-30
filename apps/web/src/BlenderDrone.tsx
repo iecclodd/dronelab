@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import type { MutableRefObject } from "react";
 import type { PhysicalState } from "../../../packages/contracts";
+import { applyRimToToon } from "./cel-material";
 
 const modelUrl = `${import.meta.env.BASE_URL}models/neon-quad.glb`;
 const basis = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
@@ -43,6 +44,7 @@ export function BlenderDrone({ state, ghost = false, hidden = false }: BlenderDr
         opacity: ghost ? 0.38 : 1,
         depthWrite: !ghost,
       });
+      if (!ghost) applyRimToToon(toon);
       materials.push(toon);
       child.material = toon;
       child.castShadow = !ghost;

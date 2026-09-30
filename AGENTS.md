@@ -13,3 +13,7 @@ Use bounded depth-one agents; no grandchildren. Parent owns integration and publ
 ## Anime arcade pass
 
 Explore explicitly selects `flightFeel: arcade`. Omitted profiles and practice missions retain research behavior; don't silently apply arcade physics to scientific comparisons. `drone-audio.ts` owns gesture-gated synthesized playback. `BlenderDrone.tsx` loads the self-contained `public/models/neon-quad.glb`; `tools/build_neon_quad.py` is its reproducible Blender CLI source. Keep large editable .blend/render artifacts in sibling outputs. `Scene.tsx` and `GameOverlay.tsx` own velocity/impact effects; respect the Motion effects setting and reduced-motion default. Use one Playwright runner at a time.
+
+## Cel visual pass
+
+`toon-pipeline.tsx` owns rendering (priority-1 `useFrame`): colour pass → normal/depth pass → ink/grade composite, with Auto/High/Balanced/Performance tiers. New meshes are inked unless they are transparent, Basic/Shader materials, lines or points; opt in with `userData.ink` or out with `userData.noInk`. `ValleySky`/`ValleyDressing`/`PizzeriaDressing`/`WorldFx` hold non-colliding dressing only: keep scenery outside the flight bounds or flush with or inside existing colliders. `nav-store.ts` shares next-spot state between GameOverlay and the beacons. Research and sources: docs/CEL_SHADING_RESEARCH.md.

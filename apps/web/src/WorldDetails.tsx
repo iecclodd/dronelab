@@ -10,10 +10,6 @@ const visual = ([x, y, z]: V3): [number, number, number] => [x, z, -y];
 const containers = FREE_WORLD.obstacles.filter((obstacle) =>
   obstacle.id.startsWith("yard-container"),
 );
-const canyonFaces = FREE_WORLD.obstacles.filter(
-  (obstacle) =>
-    obstacle.id === "canyon-west-butte" || obstacle.id === "canyon-east-butte",
-);
 const hangar = FREE_WORLD.obstacles.find(
   (obstacle) => obstacle.id === "home-hangar",
 )!;
@@ -89,22 +85,6 @@ function HangarFront() {
   );
 }
 
-function CanyonStrata({ obstacle }: { obstacle: Obstacle }) {
-  const [x, y, z] = obstacle.position;
-  const [width, depth, height] = obstacle.size;
-  const face = y - depth / 2 - 0.014;
-  return (
-    <group>
-      {[-0.25, 0, 0.25].map((offset) => (
-        <mesh key={offset} position={visual([x, face, z + height * offset])}>
-          <planeGeometry args={[width * 0.91, 0.34]} />
-          <meshBasicMaterial color="#e0a065" transparent opacity={0.58} />
-        </mesh>
-      ))}
-    </group>
-  );
-}
-
 function GroundRoad({ position, length, angle, map }: { position: V3; length: number; angle: number; map: THREE.Texture }) {
   return (
     <mesh
@@ -133,9 +113,6 @@ export function WorldDetails() {
       <HangarFront />
       {containers.map((obstacle, index) => (
         <ContainerFace key={obstacle.id} obstacle={obstacle} index={index} />
-      ))}
-      {canyonFaces.map((obstacle) => (
-        <CanyonStrata key={obstacle.id} obstacle={obstacle} />
       ))}
       {runwayLightPositions.map((position, index) => (
         <mesh key={index} position={visual(position)}>

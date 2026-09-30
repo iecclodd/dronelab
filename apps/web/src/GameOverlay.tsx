@@ -1,10 +1,61 @@
-import { useEffect, useRef, useState, type MutableRefObject } from "react";
+import React, { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { ArrowUpRight, Camera, Crosshair, Gamepad2, MapPin, Pause, Play, RotateCcw, Settings2, Volume2, VolumeX } from "lucide-react";
 import type { ControllerId, PhysicalState, Scenario } from "../../../packages/contracts";
 import { FREE_WORLD } from "../../../packages/contracts/free-world";
 import { PIZZERIA_WORLD } from "../../../packages/contracts/pizzeria-world";
 import type { CameraMode } from "./Scene";
 import type { FlightLook } from "./flight-controls";
+import { navMarker, navStore } from "./nav-store";
+
+/** Screen-space pin for the chosen next spot; clamps to the edge with an arrow when off-screen. */
+function WaypointMarker({ name, color, enabled }: { name?: string; color?: string; enabled: boolean }) {
+  const el = useRef<HTMLDivElement>(null);
+  const distance = useRef<HTMLElement>(null);
+  useEffect(() => {
+    let frame = 0;
+    const tick = () => {
+      const node = el.current;
+      if (node) {
+        const show = enabled && navMarker.active;
+        node.style.opacity = show ? "1" : "0";
+        if (show) {
+          node.style.transform = `translate(${(navMarker.x * 100).toFixed(2)}vw, ${(navMarker.y * 100).toFixed(2)}vh)`;
+          node.classList.toggle("is-offscreen", !navMarker.onScreen);
+          node.style.setProperty("--pin-angle", `${navMarker.angle}rad`);
+          if (distance.current) distance.current.textContent = `${Math.round(navMarker.distance)} m`;
+        }
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [enabled]);
+  return <div ref={el} className="waypoint-pin" aria-hidden="true" style={{ "--pin-color": color } as React.CSSProperties}>
+    <div className="pin-body"><i className="pin-diamond" /><span className="pin-label">{name}</span><b ref={distance} className="pin-distance" /></div>
+    <i className="pin-arrow" />
+  </div>;
+}
+
+const CARDINALS: Record<number, string> = { 0: "N", 45: "NE", 90: "E", 135: "SE", 180: "S", 225: "SW", 270: "W", 315: "NW" };
+/** Heading tape with landmark pips, so direction-to-spot reads without opening the map. */
+function CompassTape({ heading, pips }: { heading: number; pips: { id: string; bearing: number; color: string; active: boolean; visited: boolean }[] }) {
+  const span = 75;
+  const place = (deg: number) => {
+    const rel = ((deg - heading + 540) % 360) - 180;
+    return Math.abs(rel) <= span ? 50 + (rel / span) * 50 : undefined;
+  };
+  const ticks: { deg: number; x: number }[] = [];
+  for (let deg = 0; deg < 360; deg += 15) { const x = place(deg); if (x !== undefined) ticks.push({ deg, x }); }
+  return <div className="compass-tape" aria-hidden="true">
+    {ticks.map(({ deg, x }) => <span key={deg} className={`tape-tick ${CARDINALS[deg] ? "major" : ""}`} style={{ left: `${x}%` }}>{CARDINALS[deg] && <em>{CARDINALS[deg]}</em>}</span>)}
+    {pips.map((pip) => {
+      const x = place(pip.bearing);
+      const rel = ((pip.bearing - heading + 540) % 360) - 180;
+      const clamped = x ?? (rel < 0 ? 0 : 100);
+      return <i key={pip.id} className={`tape-pip ${pip.active ? "active" : ""} ${pip.visited ? "visited" : ""} ${x === undefined ? "edge" : ""}`} style={{ left: `${clamped}%`, "--pip": pip.color } as React.CSSProperties} />;
+    })}
+  </div>;
+}
 
 type Props = {
   flight?: PhysicalState;
@@ -60,6 +111,11 @@ export function GameOverlay(p: Props) {
     impactTimer.current = window.setTimeout(() => setImpact(false), 280);
   }, [p.flight?.collisions, p.effectsEnabled]);
   const [waypoint, setWaypoint] = useState(1);
+  const [toast, setToast] = useState<{ key: number; name: string; color: string; count: number; total: number }>();
+  const toastTimer = useRef<number | undefined>(undefined);
+  const [liftoff, setLiftoff] = useState(0);
+  const wasActive = useRef(false);
+  useEffect(() => () => window.clearTimeout(toastTimer.current), []);
   const [visited, setVisited] = useState<string[]>([]);
   const visits = useRef(new Set<string>());
   const visitWorld = useRef("");
@@ -78,8 +134,22 @@ export function GameOverlay(p: Props) {
         changed = true;
       }
     }
-    if (changed) setVisited([...visits.current]);
+    if (changed) {
+      const list = [...visits.current];
+      setVisited(list);
+      const latest = world.landmarks.find((l) => l.id === list[list.length - 1]);
+      if (latest && (p.flight?.step ?? 0) > 60) {
+        setToast({ key: Date.now(), name: latest.name, color: latest.color, count: list.length, total: world.landmarks.length });
+        window.clearTimeout(toastTimer.current);
+        toastTimer.current = window.setTimeout(() => setToast(undefined), 2800);
+      }
+    }
   }, [active, free, p.flight, world, worldId]);
+  useEffect(() => { navStore.set({ worldId, waypoint, visited }); }, [worldId, waypoint, visited]);
+  useEffect(() => {
+    if (active && !wasActive.current && (p.flight?.step ?? 0) < 90) { setLiftoff(Date.now()); window.setTimeout(() => setLiftoff(0), 1100); }
+    wasActive.current = active;
+  }, [active, p.flight?.step]);
   const destination = world.landmarks[waypoint % world.landmarks.length];
   const distance = destination ? Math.hypot(...destination.position.map((v, i) => v - position[i])) : 0;
   const q = p.flight?.quaternion ?? [0, 0, 0, 1];
@@ -89,6 +159,14 @@ export function GameOverlay(p: Props) {
   const smallMap = worldId === "pizzeria";
 
   const lowPass = active && speed > 28 && position[2] < 3.5;
+  const pips = free ? world.landmarks.map((l, i) => ({
+    id: l.id, color: l.color, active: i === waypoint % world.landmarks.length, visited: visited.includes(l.id),
+    bearing: ((Math.atan2(l.position[0] - position[0], l.position[1] - position[1]) * 180 / Math.PI) + 360) % 360,
+  })) : [];
+  const topSpeed = worldId === "pizzeria" && free ? 58 : 108;
+  const cruise = worldId === "pizzeria" && free ? 36 : 65;
+  const segments = 24;
+  const lit = Math.round(Math.min(1, speed / topSpeed) * segments);
   return <div className={`game-overlay ${active ? "is-flying" : "is-idle"} ${impact && p.effectsEnabled ? "has-impact" : ""}`}>
     {impact && p.effectsEnabled && <svg className="impact-frame" viewBox="0 0 1000 700" preserveAspectRatio="none" aria-hidden="true">
       <path d="M0 0H1000L910 58 990 94 770 112 988 133 900 177 1000 203V700H0L81 635 12 602 201 586 0 546Z" fill="#201928"/>
@@ -101,7 +179,7 @@ export function GameOverlay(p: Props) {
         return <line key={i} x1={500 + Math.cos(a) * r} y1={350 + Math.sin(a) * r * .72} x2={500 + Math.cos(a) * (r + 140)} y2={350 + Math.sin(a) * (r + 140) * .72} />;
       })}
     </svg>}
-    <div className="world-heading">
+    <div className="world-heading" key={`${worldId}-${free}`}>
       <div className="live-tag"><i /> {free ? "FREE FLIGHT" : "PRACTICE"} <span>/</span> {worldId === "pizzeria" && free ? "AFTER HOURS" : "GOLDEN HOUR"}</div>
       <h1>{free ? world.name : p.scenario?.name ?? "Loading flight deck"}<span>↗</span></h1>
       <p>{free ? (worldId === "pizzeria" ? "A little after-hours exploration." : "Find your line.") : p.scenario?.description}</p>
@@ -112,8 +190,9 @@ export function GameOverlay(p: Props) {
     </div>
 
     <div className="flight-compass" aria-label={`Heading ${fmt(heading)} degrees`}>
-      <i /><b>{fmt(heading).padStart(3, "0")}°</b><i />
-      <small>{lowPass ? "LOW PASS" : active ? "IN FLIGHT" : "READY"}</small>
+      <CompassTape heading={heading} pips={pips} />
+      <b>{fmt(heading).padStart(3, "0")}°</b>
+      <small className={lowPass ? "low-pass" : ""}>{lowPass ? "LOW PASS" : active ? "IN FLIGHT" : "READY"}</small>
     </div>
     <div className="pilot-tools">
       <button onClick={p.onSound} aria-label={p.soundEnabled ? "Mute drone sound" : "Enable drone sound"} title={p.soundEnabled ? "Mute drone sound" : "Enable drone sound"}>{p.soundEnabled ? <Volume2 size={16}/> : <VolumeX size={16}/>}</button>
@@ -137,10 +216,17 @@ export function GameOverlay(p: Props) {
       <p className="guide-diagnostics">{p.fps} FPS · {p.camera} camera · {p.soundEnabled ? "Sound enabled" : "Sound muted"}</p>
     </div>}
 
-    {p.camera === "FPV" && <div className="fpv-reticle" aria-hidden="true"><i /><b /><i /></div>}
+    {p.camera === "FPV" && <div className="fpv-reticle" aria-hidden="true" style={{ "--spread": `${Math.min(1, speed / topSpeed)}` } as React.CSSProperties}><i /><b /><i /></div>}
+    {free && active && <WaypointMarker name={destination?.name} color={destination?.color} enabled={p.camera !== "Orbit"} />}
+    {toast && <div key={toast.key} className="discovery-toast" role="status" style={{ "--toast": toast.color } as React.CSSProperties}>
+      <span>DISCOVERED</span><b>{toast.name}</b><small>{toast.count} / {toast.total} spots</small>
+    </div>}
+    {liftoff > 0 && p.effectsEnabled && <div key={liftoff} className="liftoff-card" aria-hidden="true"><span>LIFT</span><b>OFF</b></div>}
     <div className="flight-telemetry">
       <div className="speed"><strong>{fmt(speed)}</strong><span>km/h</span></div>
-      <div className="speed-gauge" aria-hidden="true"><i style={{width:`${Math.min(100, speed)}%`}} /></div>
+      <div className={`speed-gauge ${speed > cruise + 3 ? "is-boost" : ""}`} aria-hidden="true">
+        {Array.from({ length: segments }, (_, i) => <i key={i} className={`${i < lit ? "on" : ""} ${i >= Math.round(cruise / topSpeed * segments) ? "boost-zone" : ""}`} />)}
+      </div>
       <div className="telemetry-row"><span>ALT <b>{fmt(position[2], 1)}<small> m</small></b></span><span>TIME <b>{fmt(p.flight?.time ?? 0, 1)}<small> s</small></b></span></div>
       {p.controller === "rate" && <div className="throttle-meter"><span>THROTTLE {fmt(p.throttle * 100)}%</span><i><b style={{width: `${p.throttle * 100}%`}} /></i></div>}
       <div className="flight-camera" aria-label="Flight camera"><Camera size={14}/>{(["FPV", "Chase", "Orbit"] as CameraMode[]).map(c => <button key={c} className={p.camera === c ? "on" : ""} onClick={() => p.onCamera(c)}>{c}</button>)}</div>

@@ -7,6 +7,10 @@ import { OpenWorld } from "./OpenWorld";
 import { PizzeriaWorld } from "./PizzeriaWorld";
 import { BlenderDrone } from "./BlenderDrone";
 import { levelFlightQuaternion, type FlightLook } from "./flight-controls";
+import { LOOKS, ToonPipeline } from "./toon-pipeline";
+import { LandmarkBeacons } from "./WorldFx";
+import { FREE_WORLD } from "../../../packages/contracts/free-world";
+import { PIZZERIA_WORLD } from "../../../packages/contracts/pizzeria-world";
 export type CameraMode = "Chase" | "FPV" | "Orbit";
 export const visual = (v: V3): [number, number, number] => [v[0], v[2], -v[1]];
 const basis = new THREE.Quaternion().setFromAxisAngle(
@@ -523,11 +527,14 @@ export function FlightScene({
   return (
     <Canvas
       shadows={{ type: THREE.PCFShadowMap }}
-      camera={{ position: [10, 7, 12], fov: 57, near: 0.05, far: 650 }}
+      camera={{ position: [10, 7, 12], fov: 57, near: 0.05, far: 1000 }}
       dpr={[1, 1.5]}
       gl={{ antialias: true, preserveDrawingBuffer: true }}
     >
       {scenario?.id === "free" ? scenario.mapId === "pizzeria" ? <PizzeriaWorld scenario={scenario} /> : <OpenWorld scenario={scenario} /> : <World scenario={scenario} />}
+      {scenario?.id === "free" && (scenario.mapId === "pizzeria"
+        ? <LandmarkBeacons key="pizzeria" world={PIZZERIA_WORLD} worldId="pizzeria" radius={0.32} height={(base) => Math.max(0, 5.9 - base)} state={state} />
+        : <LandmarkBeacons key="valley" world={FREE_WORLD} worldId="valley" radius={1.4} height={() => 70} state={state} />)}
       <Suspense fallback={<Drone state={state} hidden={cameraMode === "FPV"} />}>
         <BlenderDrone state={state} hidden={cameraMode === "FPV"} />
         {ghost && <BlenderDrone state={ghost} ghost />}
@@ -552,6 +559,13 @@ export function FlightScene({
         stabilizeView={stabilizeView}
         onFps={onFps}
         onCapture={onCapture}
+      />
+      <ToonPipeline
+        look={scenario?.id === "free" ? scenario.mapId === "pizzeria" ? LOOKS.pizzeria : LOOKS.valley : LOOKS.lab}
+        state={state}
+        effectsEnabled={effectsEnabled}
+        firstPerson={cameraMode === "FPV"}
+        worldKey={scenario?.id === "free" ? `free-${scenario.mapId ?? "valley"}` : scenario?.id ?? "none"}
       />
     </Canvas>
   );

@@ -4,6 +4,7 @@ import * as THREE from "three";
 import type { Obstacle, Scenario, V3 } from "../../../packages/contracts/index.ts";
 import { PIZZERIA_WORLD } from "../../../packages/contracts/pizzeria-world.ts";
 import { FreddyModel } from "./FreddyModel.tsx";
+import { PizzeriaDressing } from "./PizzeriaDressing";
 import { createCelGradientMap, createWornCheckerMap } from "./world-materials";
 
 const font = `${import.meta.env.BASE_URL}fonts/IBMPlexMono-Regular.woff`;
@@ -147,6 +148,7 @@ export function PizzeriaWorld({ scenario }: { scenario?: Scenario }) {
       <PartyTable position={[-5, 0, -5.2]} palette={["#a07de4", "#ffcf62", "#75dfad"]} />
       <ArcadeFaces />
       <ExitDoor />
+      <PizzeriaDressing />
       <Text font={font} position={[-13, 4.7, -5.1]} rotation={[0, 0, 0]} fontSize={0.35} color="#bdb5ff" anchorX="center">SECURITY OFFICE</Text>
       <Text font={font} position={[14.5, 4.7, 10.7]} rotation={[0, Math.PI, 0]} fontSize={0.36} color="#e6a3c4" anchorX="center">BACKSTAGE</Text>
       <Text font={font} position={[-16.6, 0.04, 0]} rotation={[-Math.PI / 2, 0, Math.PI / 2]} fontSize={0.55} color="#7ce1b2" anchorX="center">HOME PAD</Text>

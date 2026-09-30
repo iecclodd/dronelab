@@ -5,9 +5,11 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { FlightScene, type CameraMode } from "./Scene";
+import { qualitySnapshot, visualQuality, type QualityPreference } from "./toon-pipeline";
 import { GameOverlay } from "./GameOverlay";
 import { useFlightControls } from "./flight-controls";
 import { createDroneAudio, type DroneAudio } from "./drone-audio";
@@ -144,6 +146,7 @@ export default function App() {
   const [fov, setFov] = useState(85);
   const [cameraTilt, setCameraTilt] = useState(10);
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const quality = useSyncExternalStore(visualQuality.subscribe, qualitySnapshot);
   const [effectsEnabled, setEffectsEnabled] = useState(() => !window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   useEffect(() => {
     const audio = createDroneAudio({ stateRef, modeRef });
@@ -708,6 +711,14 @@ export default function App() {
               <label>Camera tilt <span>{cameraTilt}°</span><input aria-label="Camera tilt" type="range" min="0" max="45" value={cameraTilt} onChange={e => setCameraTilt(+e.target.value)} /></label>
               <label>Look sensitivity <span>{n(flightControls.sensitivity, 1)}×</span><input aria-label="Look sensitivity" type="range" min="0.25" max="2" step="0.05" value={flightControls.sensitivity} onChange={e => flightControls.setSensitivity(+e.target.value)} /></label>
               <label className="motion-toggle"><input type="checkbox" checked={effectsEnabled} onChange={e => setEffectsEnabled(e.target.checked)} />Motion effects</label>
+              <label>Visual quality <span>{quality.preference === "auto" ? ["Performance", "Balanced", "High"][quality.tier] : ""}</span>
+                <select aria-label="Visual quality" value={quality.preference} onChange={e => visualQuality.setPreference(e.target.value as QualityPreference)}>
+                  <option value="auto">Auto</option>
+                  <option value="high">High · ink, MSAA, glow</option>
+                  <option value="balanced">Balanced · ink outlines</option>
+                  <option value="performance">Performance · no post-processing</option>
+                </select>
+              </label>
               <button className="wide" onClick={flightControls.resetLook}>Recenter camera</button>
               <div className="mission-list">
                 {missions.map((m) => (
