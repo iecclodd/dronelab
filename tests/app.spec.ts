@@ -188,6 +188,21 @@ test("failed experiment is a failed job and an old job cannot cancel flight", as
   await page.evaluate(() => window.dronelab.stop());
 });
 
+test("AI Lab and browser-owned starts keep the research flight profile", async ({ page }) => {
+  await page.goto("http://127.0.0.1:5182/#experiment");
+  await page.waitForFunction(() => Boolean(window.dronelab?.sim && !window.dronelab.getState().busy));
+  expect(await page.evaluate(() => window.dronelab.getState().config.flightFeel)).toBe("research");
+  await page.getByLabel("Episode budget").fill("1");
+  const run = await runScriptedExperiment(page, "hover", 1234);
+  expect(run.config.flightFeel).toBe("research");
+  await page.evaluate(() => window.dronelab.startFlight({ config: { scenario: "free", mapId: "pizzeria" } }));
+  await page.waitForFunction(() => window.dronelab.getState().mode === "realtime");
+  expect(await page.evaluate(() => window.dronelab.getState().config.flightFeel)).toBe("research");
+  await page.evaluate(() => window.dronelab.resetFlight({ scenario: "free", mapId: "valley" }));
+  await page.waitForFunction(() => !window.dronelab.getState().busy);
+  expect(await page.evaluate(() => window.dronelab.getState().config.flightFeel)).toBe("research");
+});
+
 test("bounded scripted Hover, Gates, and Landing experiments each complete successfully", async ({
   page,
 }) => {

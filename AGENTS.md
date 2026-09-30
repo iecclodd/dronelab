@@ -9,3 +9,7 @@ FPV boundaries: packages/contracts/free-world.ts and pizzeria-world.ts define EN
 Commands: npm install; npm run dev; npm run typecheck; npm run lint; npm test; npm run build; npm run preview; npm run test:browser. Deploy dist as static HTTPS assets. Never bundle provider keys. No real-drone connections. No state fabrication. Preserve terminal transitions and entire-episode evaluation splits. Store generated runs in browser or outputs, never bulk commit.
 
 Use bounded depth-one agents; no grandchildren. Parent owns integration and publishing; only disjoint files may be written concurrently. Prefer Terra Medium implementation, Sol High independent review. Report effective routes as unverified unless runtime metadata proves them. Done means executed production browser flight/training/reload/replay/export checks, tests/build/lint passing, limits documented, deployment truthfully reported.
+
+## Anime arcade pass
+
+Explore explicitly selects `flightFeel: arcade`. Omitted profiles and practice missions retain research behavior; don't silently apply arcade physics to scientific comparisons. `drone-audio.ts` owns gesture-gated synthesized playback. `BlenderDrone.tsx` loads the self-contained `public/models/neon-quad.glb`; `tools/build_neon_quad.py` is its reproducible Blender CLI source. Keep large editable .blend/render artifacts in sibling outputs. `Scene.tsx` and `GameOverlay.tsx` own velocity/impact effects; respect the Motion effects setting and reduced-motion default. Use one Playwright runner at a time.

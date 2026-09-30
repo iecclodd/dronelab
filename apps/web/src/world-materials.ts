@@ -15,6 +15,8 @@ function texture(size: number, pixel: Pixel, repeat: [number, number]) {
   map.repeat.set(...repeat);
   map.magFilter = THREE.LinearFilter;
   map.minFilter = THREE.LinearMipmapLinearFilter;
+  map.generateMipmaps = true;
+  map.anisotropy = 4;
   map.needsUpdate = true;
   return map;
 }
@@ -23,10 +25,10 @@ const hash = (x: number, y: number) => ((x * 37 + y * 57 + x * y * 11) % 29) / 2
 
 export function createDryGrassMap() {
   return texture(64, (x, y, s) => {
-    const hatch = (x + y * 2) % 13 < 2 || (x * 2 - y) % 19 < 2;
+    const hatch = (x + y * 2) % 23 < 1;
     const track = Math.abs((y / s) * 12 - Math.round((y / s) * 12)) < 0.018;
-    return track ? [79, 105, 85] : hatch ? [88, 126, 102] : [139, 169, 103];
-  }, [42, 42]);
+    return track ? [104, 143, 130] : hatch ? [107, 146, 131] : [120, 158, 138];
+  }, [24, 24]);
 }
 
 export function createAsphaltMap() {
@@ -34,7 +36,7 @@ export function createAsphaltMap() {
     const seam = x % 31 === 0 || y % 31 === 0;
     const tire = Math.abs(y - s / 2) < 3 || Math.abs(y - s / 2) > s / 2 - 4;
     const hatch = (x * 2 + y) % 17 < 2;
-    return seam ? [63, 69, 88] : tire ? [85, 91, 103] : hatch ? [103, 111, 116] : [128, 132, 124];
+    return seam ? [87, 96, 109] : tire ? [105, 115, 125] : hatch ? [118, 127, 139] : [130, 139, 147];
   }, [9, 2]);
 }
 
@@ -61,13 +63,14 @@ export function createBrushedMetalMap() {
 /** Four deliberately stepped shades shared by every world MeshToonMaterial. */
 export function createCelGradientMap() {
   const data = new Uint8Array([
-    44, 34, 88, 255,
-    78, 70, 141, 255,
-    171, 150, 205, 255,
-    255, 239, 181, 255,
+    44, 44, 44, 255,
+    98, 98, 98, 255,
+    172, 172, 172, 255,
+    255, 255, 255, 255,
   ]);
   const map = new THREE.DataTexture(data, 4, 1, THREE.RGBAFormat);
-  map.colorSpace = THREE.SRGBColorSpace;
+  // Toon irradiance samples the red channel as non-color light intensity.
+  map.colorSpace = THREE.NoColorSpace;
   map.magFilter = THREE.NearestFilter;
   map.minFilter = THREE.NearestFilter;
   map.needsUpdate = true;

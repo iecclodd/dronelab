@@ -2,6 +2,8 @@
 
 DroneLab is an FPV browser playground with Assisted and Acro handling, mouse look, and two explorable worlds. Fly Aster Valley's hangars, container yard, canyon and viaduct, or thread the party tables in Freddy’s Pizzeria, an unofficial fan map with an original procedural Freddy model. The React/Vite UI renders a Three.js scene while a browser worker owns the Rapier simulation. Runs and behavior cloning policies stay in IndexedDB on the current device; no backend is required for the core experience.
 
+Explore now uses cel-shaded art, an original Blender quad, faster arcade handling, recoverable collision bounces, velocity-driven sound and anime impact/speed effects. Hold F to boost in Assisted. The compact Controls guide lists every movement axis; Motion effects and optional gamepad calibration live in Flight setup. Reduced-motion preferences disable motion effects by default. [Art/input research and sources](docs/ANIME_FPV_DIRECTION.md) and [Blender reproduction](docs/BLENDER_ASSETS.md) document this pass. Practice missions retain the research physics profile.
+
 ## Use the product
 
 Open [DroneLab](https://dronelab-dun.vercel.app/), choose a world and press **Take flight**. Assisted movement follows your view and brakes when released. Acro uses body rates and manual throttle without automatic leveling. Mouse look captures the cursor; dragging on the world also works. FPV, Chase and Orbit cameras are available. Flight setup adjusts field of view, camera tilt and mouse sensitivity, and contains the Hover, Gates and Landing practice missions plus controller settings.
@@ -47,8 +49,10 @@ It requires Node 20+, a high-entropy `DRONELAB_RELAY_SECRET`, and exact allowed 
 
 ## Evidence and scope
 
+Current arcade release: [executed validation, agent roles and limitations](docs/ANIME_FPV_VALIDATION.md).
+
 The latest executed checks and limitations are in [VALIDATION.md](docs/VALIDATION.md). The repository includes a real [trained checkpoint](examples/hover-bc-checkpoint.json), its [evaluation](examples/evaluation.json), a [scripted hover run](examples/hover-run.json), and [browser compatibility measurements](examples/compatibility.json). These are deliberate small examples, not synthetic training results. The checkpoint was trained in Chromium with TFJS CPU on 661 demonstration samples; its held-out success rate was 5/8 versus 8/8 for scripted control. Use the website's Train policy button to create and save a new policy on your device.
 
-Keyboard controls are W/S forward/back, A/D strafe, Space/Shift climb/descend, Q/E yaw left/right, and Ctrl boost in Assisted. Acro changes W/S to pitch, A/D to roll and Space/Shift to throttle. R retries, C cycles cameras, P pauses and Escape releases mouse capture and pauses. A standard Mode 2 gamepad layout is supported. The game pauses when the window loses focus; resume explicitly. Free-flight recordings last up to two minutes before retry. Valley limits are ±200 m and 100 m altitude; pizzeria limits are ±25 m and 6 m altitude. Open `#experiment` or `#review` to link directly to a view. Touch-only flight controls are not provided.
+Keyboard controls are W/S forward/back, A/D strafe, Space/Shift climb/descend, Q/E yaw left/right, and F boost in Assisted. Acro changes W/S to pitch, A/D to roll and Space/Shift to throttle. R retries, C cycles cameras, P pauses and Escape releases mouse capture and pauses. A standard Mode 2 gamepad layout is supported. The game pauses when the window loses focus; resume explicitly. Free-flight recordings last up to two minutes before retry. Valley limits are ±200 m and 100 m altitude; pizzeria limits are ±25 m and 6 m altitude. Open `#experiment` or `#review` to link directly to a view. Touch-only flight controls are not provided.
 
 The simulation uses ENU coordinates and FLU body axes, fixed-step transitions, seeded sensor noise/delay, explicit reward components, and terminal transition preservation. It is a browser gameplay model, not a real aircraft model. PPO/RL, image/depth observations, farm execution, and live provider verification are not implemented. See [architecture](docs/architecture.md) and [roadmap](docs/roadmap.md).

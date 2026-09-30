@@ -144,7 +144,7 @@ describe("flight control helpers", () => {
   });
 
   it("maps every keyboard flight axis, arrows, and both Shift keys without opposing-axis leaks", () => {
-    expect(keyboardFlightAxes(new Set(["KeyW", "KeyD", "Space", "KeyQ", "ControlLeft"]))).toEqual({
+    expect(keyboardFlightAxes(new Set(["KeyW", "KeyD", "Space", "KeyQ", "KeyF"]))).toEqual({
       forward: 1, right: 1, up: 1, yaw: 1, boost: true,
     });
     expect(keyboardFlightAxes(new Set(["KeyS", "KeyA", "ShiftRight", "KeyE"]))).toEqual({

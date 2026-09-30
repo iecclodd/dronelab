@@ -40,15 +40,30 @@ export function OpenWorld({ scenario }: { scenario?: Scenario }) {
   const obstacles = scenario?.id === "free" ? scenario.obstacles : FREE_WORLD.obstacles;
   const [grassMap, asphaltMap, gradientMap] = useMemo(() => [createDryGrassMap(), createAsphaltMap(), createCelGradientMap()], []);
   useEffect(() => () => { grassMap.dispose(); asphaltMap.dispose(); gradientMap.dispose(); }, [grassMap, asphaltMap, gradientMap]);
+  const ink = useMemo(() => {
+    const vertices: number[] = [];
+    for (const obstacle of obstacles.filter(o => /^(yard-frame|canyon|viaduct|lookout|home-hangar)/.test(o.id))) {
+      const box = new THREE.BoxGeometry(...visualSize(obstacle.size));
+      const edges = new THREE.EdgesGeometry(box);
+      const origin = visual(obstacle.position);
+      const points = edges.attributes.position;
+      for (let i = 0; i < points.count; i++) vertices.push(points.getX(i) + origin[0], points.getY(i) + origin[1], points.getZ(i) + origin[2]);
+      edges.dispose(); box.dispose();
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
+    return geometry;
+  }, [obstacles]);
+  useEffect(() => () => ink.dispose(), [ink]);
 
   return (
     <>
       <color attach="background" args={["#77b7c8"]} />
       <fog attach="fog" args={["#9dd2dc", 105, 370]} />
-      <hemisphereLight args={["#ffedbd", "#50477e", 1.45]} />
+      <hemisphereLight args={["#ffedbd", "#50477e", 1.25]} />
       <directionalLight
         position={[-115, 145, 80]}
-        intensity={3.15}
+        intensity={2.35}
         castShadow
         shadow-mapSize={[1024, 1024]}
         shadow-camera-left={-155}
@@ -58,14 +73,20 @@ export function OpenWorld({ scenario }: { scenario?: Scenario }) {
         shadow-bias={-0.00035}
       />
       <directionalLight position={[92, 42, -105]} intensity={0.55} color="#8273bd" />
+      {/* Flat faceted cloud silhouettes stay outside the playable boundary. */}
+      {([[245, 67, -95], [220, 61, 130], [-235, 63, -65], [25, 72, -260]] as [number, number, number][]).map((position, i) => <group key={i} position={position} scale={[24, 9, 11]}>
+        {[-1, 0, 1].map((x) => <mesh key={x} position={[x, x === 0 ? .4 : 0, 0]} scale={[1.25, x === 0 ? 1 : .6, .65]}>
+          <sphereGeometry args={[1, 8, 6]} /><meshBasicMaterial color={i % 2 ? "#fff1cf" : "#e2efdf"} fog={false} />
+        </mesh>)}
+      </group>)}
 
       <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
         <planeGeometry args={[FREE_WORLD.bounds * 2, FREE_WORLD.bounds * 2]} />
-        <meshToonMaterial map={grassMap} gradientMap={gradientMap} color="#a9d16a" />
+        <meshToonMaterial map={grassMap} gradientMap={gradientMap} color="#bed7d0" />
       </mesh>
       <mesh position={[0, 0.012, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
         <planeGeometry args={[166, 18]} />
-        <meshToonMaterial map={asphaltMap} gradientMap={gradientMap} color="#d2c57c" />
+        <meshToonMaterial map={asphaltMap} gradientMap={gradientMap} color="#c5ccde" />
       </mesh>
       {runwayDashes.map((x) => (
         <mesh key={x} position={[x, 0.024, 0]} rotation={[-Math.PI / 2, 0, 0]}>
@@ -92,6 +113,7 @@ export function OpenWorld({ scenario }: { scenario?: Scenario }) {
           />
         </mesh>
       ))}
+      <lineSegments geometry={ink}><lineBasicMaterial color="#293642" transparent opacity={0.55} /></lineSegments>
 
       {FREE_WORLD.landmarks.map((landmark) => (
         <group key={landmark.id} position={visual(landmark.position)}>

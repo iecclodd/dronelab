@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
-import { ArrowUpRight, Camera, Crosshair, Gamepad2, MapPin, Pause, Play, RotateCcw, Settings2 } from "lucide-react";
+import { ArrowUpRight, Camera, Crosshair, Gamepad2, MapPin, Pause, Play, RotateCcw, Settings2, Volume2, VolumeX } from "lucide-react";
 import type { ControllerId, PhysicalState, Scenario } from "../../../packages/contracts";
 import { FREE_WORLD } from "../../../packages/contracts/free-world";
 import { PIZZERIA_WORLD } from "../../../packages/contracts/pizzeria-world";
@@ -18,6 +18,9 @@ type Props = {
   throttle: number;
   fps: number;
   lookRef: MutableRefObject<FlightLook>;
+  soundEnabled?: boolean;
+  onSound?: () => void;
+  effectsEnabled?: boolean;
   onLaunch: () => void;
   onPause: () => void;
   onRestart: () => void;
@@ -39,6 +42,23 @@ export function GameOverlay(p: Props) {
   const ended = !!(p.flight?.terminated || p.flight?.truncated);
   const started = (p.flight?.step ?? 0) > 0;
   const [guide, setGuide] = useState(false);
+  const [mapOpen, setMapOpen] = useState(false);
+  const [impact, setImpact] = useState(false);
+  const lastCollision = useRef(0);
+  const lastImpactAt = useRef(-Infinity);
+  const impactTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(impactTimer.current), []);
+  useEffect(() => {
+    const collisions = p.flight?.collisions ?? 0;
+    const hit = collisions > lastCollision.current;
+    lastCollision.current = collisions;
+    if (!p.effectsEnabled) { setImpact(false); return; }
+    if (!hit || !p.effectsEnabled || performance.now() - lastImpactAt.current < 750) return;
+    lastImpactAt.current = performance.now();
+    setImpact(true);
+    window.clearTimeout(impactTimer.current);
+    impactTimer.current = window.setTimeout(() => setImpact(false), 280);
+  }, [p.flight?.collisions, p.effectsEnabled]);
   const [waypoint, setWaypoint] = useState(1);
   const [visited, setVisited] = useState<string[]>([]);
   const visits = useRef(new Set<string>());
@@ -68,11 +88,23 @@ export function GameOverlay(p: Props) {
   const map = (v: number) => 100 + v / world.bounds * 88;
   const smallMap = worldId === "pizzeria";
 
-  return <div className={`game-overlay ${active ? "is-flying" : "is-idle"}`}>
+  const lowPass = active && speed > 28 && position[2] < 3.5;
+  return <div className={`game-overlay ${active ? "is-flying" : "is-idle"} ${impact && p.effectsEnabled ? "has-impact" : ""}`}>
+    {impact && p.effectsEnabled && <svg className="impact-frame" viewBox="0 0 1000 700" preserveAspectRatio="none" aria-hidden="true">
+      <path d="M0 0H1000L910 58 990 94 770 112 988 133 900 177 1000 203V700H0L81 635 12 602 201 586 0 546Z" fill="#201928"/>
+      <path d="M0 0L390 260 60 94 450 304 0 189ZM1000 0L635 279 940 84 564 326 1000 180ZM1000 700L627 438 928 615 574 385 1000 513ZM0 700L352 450 81 615 420 392 0 505Z" fill="#fff3b0"/>
+    </svg>}
+    {p.effectsEnabled && active && speed > 25 && <svg className="speed-lines" viewBox="0 0 1000 700" preserveAspectRatio="none" aria-hidden="true" style={{opacity: Math.min(.3, (speed - 25) / 260)}}>
+      {Array.from({ length: 22 }, (_, i) => {
+        const a = i * Math.PI * 2 / 22;
+        const r = 340 + (i % 4) * 35;
+        return <line key={i} x1={500 + Math.cos(a) * r} y1={350 + Math.sin(a) * r * .72} x2={500 + Math.cos(a) * (r + 140)} y2={350 + Math.sin(a) * (r + 140) * .72} />;
+      })}
+    </svg>}
     <div className="world-heading">
-      <div className="live-tag"><i /> {free ? "FREE ROAM" : "TRAINING GROUND"} <span>•</span> {worldId === "pizzeria" && free ? "FAN MAP" : "GOLDEN HOUR"}</div>
+      <div className="live-tag"><i /> {free ? "FREE FLIGHT" : "PRACTICE"} <span>/</span> {worldId === "pizzeria" && free ? "AFTER HOURS" : "GOLDEN HOUR"}</div>
       <h1>{free ? world.name : p.scenario?.name ?? "Loading flight deck"}<span>↗</span></h1>
-      <p>{free ? (worldId === "pizzeria" ? "After hours. Through the party room and beyond." : "No finish line. Just your next good line.") : p.scenario?.description}</p>
+      <p>{free ? (worldId === "pizzeria" ? "A little after-hours exploration." : "Find your line.") : p.scenario?.description}</p>
       <div className="world-switch" aria-label="Choose a world">
         <button disabled={p.busy} className={free && worldId === "valley" ? "selected" : ""} onClick={() => p.onWorldChange("valley")}>01 <span>Aster Valley</span></button>
         <button disabled={p.busy} className={free && worldId === "pizzeria" ? "selected" : ""} onClick={() => p.onWorldChange("pizzeria")}>02 <span>Freddy’s Pizzeria</span></button>
@@ -80,32 +112,36 @@ export function GameOverlay(p: Props) {
     </div>
 
     <div className="flight-compass" aria-label={`Heading ${fmt(heading)} degrees`}>
-      <span>N</span><i /><span>E</span><b>{fmt(heading).padStart(3, "0")}°</b><span>S</span><i /><span>W</span>
-      <small>▼</small>
+      <i /><b>{fmt(heading).padStart(3, "0")}°</b><i />
+      <small>{lowPass ? "LOW PASS" : active ? "IN FLIGHT" : "READY"}</small>
     </div>
     <div className="pilot-tools">
+      <button onClick={p.onSound} aria-label={p.soundEnabled ? "Mute drone sound" : "Enable drone sound"} title={p.soundEnabled ? "Mute drone sound" : "Enable drone sound"}>{p.soundEnabled ? <Volume2 size={16}/> : <VolumeX size={16}/>}</button>
       <button onClick={p.onSetup}><Settings2 size={16} /><span>Flight setup</span></button>
       <button onClick={() => setGuide(!guide)} aria-expanded={guide}><Gamepad2 size={16} /><span>Controls</span></button>
-      <span className="performance"><i /> {p.fps} FPS</span>
     </div>
     {guide && <div className="control-guide">
       <div><b>Your flight deck</b><button onClick={() => setGuide(false)} aria-label="Close controls">×</button></div>
       <p><kbd>Mouse</kbd> Look around. Click “Mouse look” to capture the cursor, or drag on the world. <kbd>Esc</kbd> releases and pauses.</p>
       <dl>
-        <dt><kbd>W A S D</kbd></dt><dd>{p.controller === "rate" ? "Pitch / roll the drone" : "Move relative to your view"}</dd>
+        <dt><kbd>W S / ↑ ↓</kbd></dt><dd>{p.controller === "rate" ? "Pitch forward / back" : "Forward / backward"}</dd>
+        <dt><kbd>A D / ← →</kbd></dt><dd>{p.controller === "rate" ? "Roll left / right" : "Strafe left / right"}</dd>
         <dt><kbd>Space / Shift</kbd></dt><dd>{p.controller === "rate" ? "Increase / decrease throttle" : "Climb / descend"}</dd>
         <dt><kbd>Q / E</kbd></dt><dd>Yaw left / right</dd>
-        <dt><kbd>Ctrl</kbd></dt><dd>Boost in Assisted</dd>
+        <dt><kbd>F</kbd></dt><dd>Boost in Assisted</dd>
         <dt><kbd>R</kbd> <kbd>C</kbd> <kbd>P</kbd></dt><dd>Retry · camera · pause</dd>
       </dl>
-      <p>{p.controller === "rate" ? "Acro has no automatic leveling. Small inputs work best; a gamepad gives finer control." : "Assisted keeps the drone level and brakes when you release movement."}</p>
-      <p>Desktop keyboard or Mode 2 gamepad. Each recorded flight lasts up to two minutes; retry for a fresh session. {free ? `Map limits: ±${world.bounds} m, ${world.ceiling} m ceiling.` : "Practice missions have their own arena limits."}</p>
+      <p>{p.controller === "rate" ? "Acro: full body rates, manual throttle and a body-mounted camera. Small inputs go a long way." : "Assisted: punchy acceleration, braking on release and a steady horizon in free flight. Hold F to boost."}</p>
+      <p>Gamepad: left stick = yaw / throttle, right stick = roll / pitch. Plug in and move a stick to connect. Optional center calibration is in Flight setup.</p>
+      <p>Each recorded flight lasts up to two minutes; retry for a fresh session. {free ? `Map limits: ±${world.bounds} m, ${world.ceiling} m ceiling. Arcade collisions bounce; skim low and find a fast line.` : "Practice missions use research physics."}</p>
+      <p className="guide-diagnostics">{p.fps} FPS · {p.camera} camera · {p.soundEnabled ? "Sound enabled" : "Sound muted"}</p>
     </div>}
 
     {p.camera === "FPV" && <div className="fpv-reticle" aria-hidden="true"><i /><b /><i /></div>}
     <div className="flight-telemetry">
-      <div className="speed"><strong>{fmt(speed)}</strong><span>KM/H<small>FLIGHT SPEED</small></span></div>
-      <div className="telemetry-row"><span>ALT <b>{fmt(position[2], 1)}<small> m</small></b></span><span>TIME <b>{fmt(p.flight?.time ?? 0, 1)}<small> s</small></b></span><span>PACK <b>{fmt((p.flight?.battery ?? 1) * 100)}<small> %</small></b></span></div>
+      <div className="speed"><strong>{fmt(speed)}</strong><span>km/h</span></div>
+      <div className="speed-gauge" aria-hidden="true"><i style={{width:`${Math.min(100, speed)}%`}} /></div>
+      <div className="telemetry-row"><span>ALT <b>{fmt(position[2], 1)}<small> m</small></b></span><span>TIME <b>{fmt(p.flight?.time ?? 0, 1)}<small> s</small></b></span></div>
       {p.controller === "rate" && <div className="throttle-meter"><span>THROTTLE {fmt(p.throttle * 100)}%</span><i><b style={{width: `${p.throttle * 100}%`}} /></i></div>}
       <div className="flight-camera" aria-label="Flight camera"><Camera size={14}/>{(["FPV", "Chase", "Orbit"] as CameraMode[]).map(c => <button key={c} className={p.camera === c ? "on" : ""} onClick={() => p.onCamera(c)}>{c}</button>)}</div>
     </div>
@@ -113,20 +149,20 @@ export function GameOverlay(p: Props) {
     <div className="flight-dock">
       {ended && <div className="flight-ended" role="status">{p.flight?.reason === "success" ? "Nice flight." : p.flight?.reason === "timeout" ? "Flight recorded. Ready for another?" : "A little too close. Find another line."} <span>{p.flight?.reason?.replaceAll("_", " ")}</span></div>}
       <div className="pilot-modes" aria-label="Flight handling">
-        <button className={p.controller === "manual" ? "selected" : ""} disabled={p.busy} onClick={() => p.onController("manual")}><i />Assisted <small>CRUISE</small></button>
-        <button className={p.controller === "rate" ? "selected" : ""} disabled={p.busy} onClick={() => p.onController("rate")}><i />Acro <small>FULL CONTROL</small></button>
+        <button className={p.controller === "manual" ? "selected" : ""} disabled={p.busy} onClick={() => p.onController("manual")}><i />Assisted</button>
+        <button className={p.controller === "rate" ? "selected" : ""} disabled={p.busy} onClick={() => p.onController("rate")}><i />Acro</button>
       </div>
       <div className="flight-actions">
         <button className="take-flight" disabled={p.busy} onClick={active ? p.onPause : ended || !started ? p.onLaunch : p.onPause}>{active ? <Pause size={17}/> : <Play size={17}/>} {p.busy ? "Preparing…" : active ? "Pause" : ended ? "Fly again" : started ? "Resume" : "Take flight"} {!active && <ArrowUpRight size={17}/>}</button>
         <button className={`look-button ${p.locked || p.dragging ? "selected" : ""}`} disabled={p.camera !== "FPV" || p.busy} onClick={p.onLook} title={p.camera === "FPV" ? "Capture the mouse to look around" : "Select FPV for mouse look"}><Crosshair size={16}/>{p.locked ? "Mouse captured" : p.dragging ? "Looking" : "Mouse look"}</button>
         <button className="retry-button" disabled={p.busy} onClick={p.onRestart} aria-label="Restart flight" title="Restart flight (R)"><RotateCcw size={16}/></button>
       </div>
-      <div className="dock-hint"><kbd>WASD</kbd> {p.controller === "rate" ? "PITCH / ROLL" : "MOVE"} <kbd>SPACE / SHIFT</kbd> {p.controller === "rate" ? "THROTTLE" : "UP / DOWN"} <kbd>R</kbd> RETRY</div>
+      <div className="dock-hint"><kbd>WASD</kbd> {p.controller === "rate" ? "PITCH / ROLL" : "MOVE"} {p.controller === "rate" ? <><kbd>SPACE / SHIFT</kbd> THROTTLE</> : <><kbd>F</kbd> BOOST</>} <kbd>R</kbd> RETRY</div>
     </div>
 
-    {free && <div className="explore-map">
-      <div className="map-title"><span><MapPin size={12}/> FLIGHT MAP</span><b>{visited.length}/{world.landmarks.length} SPOTS</b></div>
-      <svg viewBox="0 0 200 200" role="img" aria-label={`Map of ${world.name}. Your position ${fmt(position[0])}, ${fmt(position[1])} meters.`}>
+    {free && <div className={`explore-map ${mapOpen ? "map-open" : "map-closed"}`}>
+      <button className="map-title" onClick={() => setMapOpen(!mapOpen)} aria-label={mapOpen ? "Hide minimap" : "Show minimap"} aria-expanded={mapOpen}><span><MapPin size={12}/> {mapOpen ? "MINIMAP" : "MAP"}</span><b>{visited.length}/{world.landmarks.length}</b></button>
+      {mapOpen && <svg viewBox="0 0 200 200" role="img" aria-label={`Map of ${world.name}. Your position ${fmt(position[0])}, ${fmt(position[1])} meters.`}>
         <defs><pattern id="map-grid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M 20 0 L 0 0 0 20" fill="none" stroke="#d8e4c414" strokeWidth=".6"/></pattern></defs>
         <rect x="5" y="5" width="190" height="190" rx="3" fill="url(#map-grid)" />
         <rect x="12" y="12" width="176" height="176" fill="none" stroke="#aec3ad28" strokeDasharray="2 4" />
@@ -134,7 +170,7 @@ export function GameOverlay(p: Props) {
         {world.landmarks.map((l,i) => <g key={l.id} transform={`translate(${map(l.position[0])},${200-map(l.position[1])})`}><circle r={i===waypoint ? 5 : 3} fill={visited.includes(l.id) ? "#bbe990" : l.color} opacity={i===waypoint ? 1 : .7}/>{i===waypoint && <circle r="9" fill="none" stroke="#d8f7a8" strokeWidth=".7"/>}</g>)}
         <g transform={`translate(${map(position[0])},${200-map(position[1])}) rotate(${heading})`}><circle r="6" fill="#172321"/><path d="M0 -6 L4 5 L0 3 L-4 5 Z" fill="#eef7df"/></g>
         <text x="181" y="25" fill="#e8efdc" fontSize="8">N</text>
-      </svg>
+      </svg>}
       <button className="next-spot" onClick={() => setWaypoint((waypoint+1)%world.landmarks.length)} title="Choose next landmark"><span><small>NEXT SPOT</small>{destination?.name}</span><b>{fmt(distance)} m ↗</b></button>
     </div>}
   </div>;

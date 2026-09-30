@@ -10,6 +10,7 @@ import {
 import { FlightScene, type CameraMode } from "./Scene";
 import { GameOverlay } from "./GameOverlay";
 import { useFlightControls } from "./flight-controls";
+import { createDroneAudio, type DroneAudio } from "./drone-audio";
 import { ConnectionPanel } from "./ConnectionPanel";
 import { SimulationClient } from "./simulation";
 import { TrainingClient, type TrainingProgress } from "./learning";
@@ -104,6 +105,7 @@ export default function App() {
   const cancelled = useRef(false);
   const gamepadZero = useRef<number[]>([]);
   const modeRef = useRef("paused");
+  const audioRef = useRef<DroneAudio | undefined>(undefined);
   const resetInputRef = useRef<() => void>(() => undefined);
   const playbackEpoch = useRef(0);
   const [batchProgress, setBatchProgress] = useState("");
@@ -114,7 +116,7 @@ export default function App() {
           ? "Review"
           : "Fly",
     ),
-    [config, setConfig] = useState<SimConfig>({ ...DEFAULT_CONFIG, scenario: "free", mapId: "valley", maxSeconds: 120 }),
+    [config, setConfig] = useState<SimConfig>({ ...DEFAULT_CONFIG, scenario: "free", mapId: "valley", flightFeel: location.hash === "#experiment" ? "research" : "arcade", maxSeconds: 120 }),
     [controller, setController] = useState<ControllerId>("manual"),
     [scenario, setScenario] = useState<Scenario>(),
     [flight, setFlight] = useState<PhysicalState>(),
@@ -141,6 +143,13 @@ export default function App() {
   const [setupOpen, setSetupOpen] = useState(false);
   const [fov, setFov] = useState(85);
   const [cameraTilt, setCameraTilt] = useState(10);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [effectsEnabled, setEffectsEnabled] = useState(() => !window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  useEffect(() => {
+    const audio = createDroneAudio({ stateRef, modeRef });
+    audioRef.current = audio;
+    return () => { void audio.dispose(); audioRef.current = undefined; };
+  }, []);
   const policy = policies.find((p) => p.id === policyId);
   useEffect(() => {
     history.replaceState(null, "", "#" + view.toLowerCase());
@@ -167,6 +176,7 @@ export default function App() {
         resetInputRef.current();
         setBusy(true);
         modeRef.current = "paused";
+        audioRef.current?.silence();
         const result = await sim.current!.request<any>("reset", {
           config: next,
           controller: control,
@@ -221,6 +231,7 @@ export default function App() {
         stateRef.current = p.state;
         latestStep.current = p.state.step;
         modeRef.current = p.mode || "paused";
+        audioRef.current?.sync();
         const now = performance.now();
         if (now - lastUi.current > 100 || p.state.terminated || p.state.truncated) {
           lastUi.current = now;
@@ -239,6 +250,7 @@ export default function App() {
         void saveRun(p).then(refresh).catch(report);
       if (message.type === "interruption") {
         modeRef.current = "paused";
+        audioRef.current?.sync();
         setMode("paused");
       }
       if (message.type === "interruption" || message.type === "overload")
@@ -274,7 +286,7 @@ export default function App() {
   }, []);
   const chooseMission = (id: ScenarioId) => {
     if (busy) return;
-    const next = { ...config, scenario: id };
+    const next: SimConfig = { ...config, scenario: id, flightFeel: id === "free" ? "arcade" : "research" };
     setConfig(next);
     void reset(next).catch(report);
   };
@@ -297,7 +309,9 @@ export default function App() {
   const start = async (overrides?: {
     controller?: ControllerId;
     config?: Partial<SimConfig>;
-  }): Promise<void> => {
+  }, playSound = true): Promise<void> => {
+    // Unlock during the click/key event; arm playback only once the worker is live.
+    const audioReady = playSound && view === "Fly" ? audioRef.current?.unlock().catch(() => undefined) : undefined;
     try {
       playbackEpoch.current++;
       resetInputRef.current();
@@ -326,6 +340,8 @@ export default function App() {
       await saveRun(record);
       await sim.current!.request("mode", { mode: "realtime" });
       modeRef.current = "realtime";
+      await audioReady;
+      if (playSound && view === "Fly") void audioRef.current?.start().catch(() => undefined);
       setMode("realtime");
       setError("");
     } catch (e) {
@@ -343,21 +359,27 @@ export default function App() {
   const stop = async (): Promise<void> => {
     await Promise.all([sim.current?.request("stop"), cancelWork()]);
     modeRef.current = "paused";
+    audioRef.current?.sync();
     if (alive.current) setMode("paused");
   };
   const pauseFlight = async (): Promise<void> => {
     await sim.current!.request("mode", { mode: "paused" });
     modeRef.current = "paused";
+    audioRef.current?.sync();
     setMode("paused");
   };
   const pause = async () => {
     try {
       const next = modeRef.current === "paused" ? "realtime" : "paused";
+      const audioReady = next === "realtime" ? audioRef.current?.unlock().catch(() => undefined) : undefined;
       if (next === "realtime") setSetupOpen(false);
       await sim.current!.request("mode", {
         mode: next,
       });
       modeRef.current = next;
+      await audioReady;
+      if (next === "realtime" && view === "Fly") void audioRef.current?.start().catch(() => undefined);
+      else audioRef.current?.sync();
       setMode(next);
     } catch (e) {
       report(e);
@@ -369,15 +391,18 @@ export default function App() {
     modeRef,
     cameraMode: camera,
     cameraTilt,
+    flightFeel: config.flightFeel,
+    mapId: config.mapId,
     enabled: view === "Fly" && !ai && !setupOpen && !busy,
     sendAction: (action: Action) => { void sim.current?.request("action", { action }).catch(() => undefined); },
     pause: () => { if (modeRef.current === "realtime") void pauseFlight().catch(report); },
-    restart: () => { if (!busy) void start().catch(report); },
+    restart: () => { if (!busy) void start({ config: { flightFeel: config.scenario === "free" ? "arcade" : "research" } }).catch(report); },
     cycleCamera: () => setCamera((c) => c === "FPV" ? "Chase" : c === "Chase" ? "Orbit" : "FPV"),
     calibrationRef: gamepadZero,
   });
   resetInputRef.current = flightControls.resetControls;
   const changeView = (next: View) => {
+    if (next === "Experiment") setConfig(current => ({ ...current, flightFeel: "research" }));
     if (next !== "Review" && selected) {
       playbackEpoch.current++;
       setBusy(true);
@@ -392,7 +417,7 @@ export default function App() {
           ghostRef.current = undefined;
           setFlight(current.state);
           setScenario(current.scenario);
-          setConfig(current.config);
+          setConfig(next === "Experiment" ? { ...current.config, flightFeel: "research" } : current.config);
           setController(current.controller);
           setObservation(current.observation);
           setPath([current.state.position]);
@@ -415,12 +440,12 @@ export default function App() {
   const launchGame = () => {
     setSetupOpen(false);
     flightControls.resetLook();
-    void start().catch(report);
+    void start({ config: { flightFeel: config.scenario === "free" ? "arcade" : "research" } }).catch(report);
   };
   const changeWorld = (mapId: "valley" | "pizzeria") => {
     flightControls.resetLook();
     setCamera("FPV");
-    void reset({ ...config, scenario: "free", mapId, maxSeconds: 120 }).catch(report);
+    void reset({ ...config, scenario: "free", mapId, flightFeel: "arcade", maxSeconds: 120 }).catch(report);
   };
   const openSetup = () => {
     if (modeRef.current === "realtime") void pauseFlight().catch(report);
@@ -436,6 +461,7 @@ export default function App() {
       setBatchProgress("Starting episodes…");
       const configs = Array.from({ length: budget }, (_, i) => ({
         ...config,
+        flightFeel: "research" as const,
         seed: config.seed + i,
       }));
       const result = await batch.current!.request<RunRecord[]>("batch", {
@@ -455,7 +481,7 @@ export default function App() {
     }
   };
   const train = async (): Promise<PolicyCheckpoint | void> => {
-    const fixed = { ...config, scenario: "hover" as ScenarioId };
+    const fixed = { ...config, scenario: "hover" as ScenarioId, flightFeel: "research" as const };
     try {
       cancelled.current = false;
       setBusy(true);
@@ -501,6 +527,7 @@ export default function App() {
       setEvaluation({});
       const configs = Array.from({ length: 8 }, (_, i) => ({
         ...policy.config,
+        flightFeel: "research" as const,
         seed: 30001 + i,
       }));
       const all: RunRecord[] = [];
@@ -594,12 +621,12 @@ export default function App() {
         rgbAvailable: !!captureRef.current,
       }),
       setView,
-      startFlight: start,
+      startFlight: (options?: { controller?: ControllerId; config?: Partial<SimConfig> }) => start({ ...options, config: { ...options?.config, flightFeel: "research" } }, false),
       stop,
       cancelWork,
       pauseFlight,
       resetFlight: (options?: Partial<SimConfig>) =>
-        reset({ ...config, ...options }),
+        reset({ ...config, ...options, flightFeel: "research" }),
       runExperiment,
       train,
       evaluate,
@@ -659,7 +686,7 @@ export default function App() {
             </button>
           ))}
         </nav>
-        {view === "Experiment" ? <button className="connect" onClick={() => setAi(true)}>Connect AI <span>↗</span></button> : <div className="header-status"><i /> BROWSER FLIGHT / LOCAL SAVES</div>}
+        {view === "Experiment" ? <button className="connect" onClick={() => setAi(true)}>Connect AI <span>↗</span></button> : <div className="header-status"><i /> LOCAL FLIGHT</div>}
       </header>
       {error && (
         <div className="notice" role="alert">
@@ -680,6 +707,7 @@ export default function App() {
               <label>Field of view <span>{fov}°</span><input aria-label="Field of view" type="range" min="60" max="110" value={fov} onChange={e => setFov(+e.target.value)} /></label>
               <label>Camera tilt <span>{cameraTilt}°</span><input aria-label="Camera tilt" type="range" min="0" max="45" value={cameraTilt} onChange={e => setCameraTilt(+e.target.value)} /></label>
               <label>Look sensitivity <span>{n(flightControls.sensitivity, 1)}×</span><input aria-label="Look sensitivity" type="range" min="0.25" max="2" step="0.05" value={flightControls.sensitivity} onChange={e => flightControls.setSensitivity(+e.target.value)} /></label>
+              <label className="motion-toggle"><input type="checkbox" checked={effectsEnabled} onChange={e => setEffectsEnabled(e.target.checked)} />Motion effects</label>
               <button className="wide" onClick={flightControls.resetLook}>Recenter camera</button>
               <div className="mission-list">
                 {missions.map((m) => (
@@ -863,6 +891,8 @@ export default function App() {
               lookRef={flightControls.lookRef}
               fov={fov}
               cameraTilt={cameraTilt}
+              effectsEnabled={effectsEnabled && view === "Fly"}
+              stabilizeView={controller === "manual" && config.flightFeel === "arcade" && config.scenario === "free"}
               path={path}
               onFps={setFps}
               onCapture={attachCapture}
@@ -872,6 +902,13 @@ export default function App() {
             flight={flight} scenario={scenario} controller={controller} camera={camera}
             mode={mode} busy={busy} locked={flightControls.locked} dragging={flightControls.dragging}
             throttle={flightControls.throttle} lookRef={flightControls.lookRef} fps={fps}
+            effectsEnabled={effectsEnabled} soundEnabled={soundEnabled}
+            onSound={() => {
+              const enabled = !soundEnabled;
+              setSoundEnabled(enabled);
+              audioRef.current?.setMuted(!enabled);
+              if (enabled && modeRef.current === "realtime") void audioRef.current?.start().catch(() => undefined);
+            }}
             onLaunch={launchGame} onPause={() => void pause()} onRestart={launchGame}
             onLook={() => { setSetupOpen(false); flightControls.engageLook(); }}
             onSetup={openSetup} onController={(c) => void chooseController(c)}

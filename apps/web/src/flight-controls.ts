@@ -193,7 +193,7 @@ type FlightControlsOptions = {
 const flightKey = new Set([
   "KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE", "ArrowUp",
   "ArrowDown", "ArrowLeft", "ArrowRight", "Space",
-  "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight",
+  "ShiftLeft", "ShiftRight", "KeyF",
 ]);
 
 const formOwnsInput = (target: EventTarget | null) => {
@@ -220,7 +220,7 @@ export function keyboardFlightAxes(keys: ReadonlySet<string>) {
     right: keyAxis(keys, ["KeyD", "ArrowRight"], ["KeyA", "ArrowLeft"]),
     up: keyAxis(keys, "Space", ["ShiftLeft", "ShiftRight"]),
     yaw: keyAxis(keys, "KeyQ", "KeyE"),
-    boost: keys.has("ControlLeft") || keys.has("ControlRight"),
+    boost: keys.has("KeyF"),
   };
 }
 

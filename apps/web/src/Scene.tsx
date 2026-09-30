@@ -1,17 +1,21 @@
-import { useRef, useMemo, useEffect, type MutableRefObject } from "react";
+import { Suspense, useRef, useMemo, useEffect, type MutableRefObject } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, Grid, Line, Text } from "@react-three/drei";
 import * as THREE from "three";
 import type { PhysicalState, Scenario, V3 } from "../../../packages/contracts";
 import { OpenWorld } from "./OpenWorld";
 import { PizzeriaWorld } from "./PizzeriaWorld";
-import type { FlightLook } from "./flight-controls";
+import { BlenderDrone } from "./BlenderDrone";
+import { levelFlightQuaternion, type FlightLook } from "./flight-controls";
 export type CameraMode = "Chase" | "FPV" | "Orbit";
 export const visual = (v: V3): [number, number, number] => [v[0], v[2], -v[1]];
 const basis = new THREE.Quaternion().setFromAxisAngle(
   new THREE.Vector3(1, 0, 0),
   -Math.PI / 2,
 );
+const basisInverse = basis.clone().invert();
+const yawAxis = new THREE.Vector3(0, 1, 0);
+const pitchAxis = new THREE.Vector3(0, 0, 1);
 function Drone({
   state,
   ghost = false,
@@ -31,7 +35,7 @@ function Drone({
     p.set(...visual(s.position));
     ref.current.position.lerp(p, Math.min(1, dt * 28));
     q.set(...s.quaternion);
-    q.premultiply(basis).multiply(basis.clone().invert());
+    q.premultiply(basis).multiply(basisInverse);
     ref.current.quaternion.slerp(q, Math.min(1, dt * 28));
     rotors.current.forEach((r, i) => {
       if (r) r.rotation.y += dt * (s.motors[i] ?? 0.3) * 75;
@@ -309,12 +313,51 @@ function World({ scenario }: { scenario?: Scenario }) {
     </>
   );
 }
+/** Sparse world-space motes make translation readable without obscuring the line. */
+function VelocityTrails({ state, enabled }: { state: MutableRefObject<PhysicalState | undefined>; enabled: boolean }) {
+  const material = useRef<THREE.LineBasicMaterial>(null);
+  const field = useMemo(() => {
+    const count = 64;
+    const positions = new Float32Array(count * 6);
+    const anchors = new Float32Array(count * 3);
+    for (let i = 0; i < anchors.length; i++) anchors[i] = ((i * 0.61803398875) % 1 - .5) * 32;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3).setUsage(THREE.DynamicDrawUsage));
+    return { positions, anchors, geometry };
+  }, []);
+  useEffect(() => () => field.geometry.dispose(), [field]);
+  useFrame(() => {
+    const s = state.current;
+    if (!s || !material.current) return;
+    const speed = Math.hypot(...s.velocity);
+    material.current.opacity = enabled ? THREE.MathUtils.clamp((speed - 8) / 70, 0, .22) : 0;
+    if (!enabled || speed < 8) return;
+    const center = visual(s.position);
+    const direction = visual(s.velocity);
+    const length = .12 + speed * .026;
+    for (let i = 0; i < 64; i++) {
+      for (let axis = 0; axis < 3; axis++) {
+        const index = i * 3 + axis;
+        const local = ((field.anchors[index] - center[axis] + 16) % 32 + 32) % 32 - 16;
+        const point = center[axis] + local;
+        field.positions[i * 6 + axis] = point;
+        field.positions[i * 6 + axis + 3] = point - direction[axis] / speed * length;
+      }
+    }
+    field.geometry.attributes.position.needsUpdate = true;
+  });
+  return <lineSegments geometry={field.geometry} frustumCulled={false} renderOrder={1}>
+    <lineBasicMaterial ref={material} color="#fff7cd" transparent opacity={0} depthWrite={false} />
+  </lineSegments>;
+}
 function Rig({
   state,
   cameraMode,
   lookRef,
   fov,
   cameraTilt,
+  effectsEnabled,
+  stabilizeView,
   onFps,
   onCapture,
 }: {
@@ -323,6 +366,8 @@ function Rig({
   lookRef: MutableRefObject<FlightLook>;
   fov: number;
   cameraTilt: number;
+  effectsEnabled: boolean;
+  stabilizeView: boolean;
   onFps: (fps: number) => void;
   onCapture: (
     fn: (() => { step: number; dataUrl: string }) | undefined,
@@ -338,6 +383,7 @@ function Rig({
   const pitch = useMemo(() => new THREE.Quaternion(), []);
   const tracker = useRef({ frames: 0, start: performance.now() });
   const step = useRef(0);
+  const impulse = useRef({ collisions: 0, time: -1, hitAt: -10 });
   useEffect(() => {
     onCapture(() => {
       const s = state.current;
@@ -348,7 +394,7 @@ function Rig({
         drone.quaternion
           .set(...s.quaternion)
           .premultiply(basis)
-          .multiply(basis.clone().invert());
+          .multiply(basisInverse);
       }
       gl.render(scene, camera);
       const c = camera as THREE.PerspectiveCamera;
@@ -382,21 +428,34 @@ function Rig({
   useFrame((_, dt) => {
     const s = state.current;
     if (s) {
+      const fx = impulse.current;
+      if (s.time < fx.time) { fx.collisions = 0; fx.hitAt = -10; }
+      if (s.collisions > fx.collisions && s.time - fx.hitAt > .75) fx.hitAt = s.time;
+      fx.collisions = s.collisions;
+      fx.time = s.time;
+      const speed = Math.hypot(...s.velocity);
+      const c = camera as THREE.PerspectiveCamera;
+      const targetFov = cameraMode === "FPV" ? Math.min(120, fov + (effectsEnabled ? Math.min(16, speed * .55) : 0)) : 57;
+      const nextFov = THREE.MathUtils.lerp(c.fov, targetFov, 1 - Math.exp(-dt * 7));
+      if (Math.abs(c.fov - nextFov) > .005) { c.fov = nextFov; c.updateProjectionMatrix(); }
       step.current = s.step;
       if (cameraMode !== "Orbit") {
         look.set(...visual(s.position));
         if (cameraMode === "Chase") {
-          goal.copy(look).add(new THREE.Vector3(5, 3.2, 6.8));
+          goal.copy(look); goal.x += 5; goal.y += 3.2; goal.z += 6.8;
           camera.position.lerp(goal, 1 - Math.exp(-dt * 4));
-          camera.lookAt(look.add(new THREE.Vector3(0, 0.3, 0)));
+          look.y += .3;
+          camera.lookAt(look);
         } else {
-          body.set(...s.quaternion).premultiply(basis).multiply(basis.clone().invert());
+          body.set(...(stabilizeView ? levelFlightQuaternion(s.quaternion) : s.quaternion)).premultiply(basis).multiply(basisInverse);
           goal.set(0.27, 0.035, 0).applyQuaternion(body).add(look);
           const flightLook = lookRef.current;
-          yaw.setFromAxisAngle(new THREE.Vector3(0, 1, 0), flightLook.yaw);
+          yaw.setFromAxisAngle(yawAxis, flightLook.yaw);
+          const hitAge = s.time - fx.hitAt;
+          const kick = effectsEnabled && hitAge >= 0 && hitAge < .35 ? Math.sin(hitAge * 45) * Math.exp(-hitAge * 14) * .045 : 0;
           pitch.setFromAxisAngle(
-            new THREE.Vector3(0, 0, 1),
-            flightLook.pitch + THREE.MathUtils.degToRad(cameraTilt),
+            pitchAxis,
+            flightLook.pitch + THREE.MathUtils.degToRad(cameraTilt) + kick,
           );
           body.multiply(yaw).multiply(pitch);
           camera.position.copy(goal);
@@ -438,6 +497,8 @@ export function FlightScene({
   lookRef,
   fov = 90,
   cameraTilt = 15,
+  effectsEnabled = false,
+  stabilizeView = false,
   onFps,
   onCapture,
 }: {
@@ -451,6 +512,8 @@ export function FlightScene({
   fov?: number;
   /** Upward camera mount tilt in degrees. */
   cameraTilt?: number;
+  effectsEnabled?: boolean;
+  stabilizeView?: boolean;
   onFps: (fps: number) => void;
   onCapture: (
     fn: (() => { step: number; dataUrl: string }) | undefined,
@@ -465,8 +528,11 @@ export function FlightScene({
       gl={{ antialias: true, preserveDrawingBuffer: true }}
     >
       {scenario?.id === "free" ? scenario.mapId === "pizzeria" ? <PizzeriaWorld scenario={scenario} /> : <OpenWorld scenario={scenario} /> : <World scenario={scenario} />}
-      <Drone state={state} hidden={cameraMode === "FPV"} />
-      {ghost && <Drone state={ghost} ghost />}
+      <Suspense fallback={<Drone state={state} hidden={cameraMode === "FPV"} />}>
+        <BlenderDrone state={state} hidden={cameraMode === "FPV"} />
+        {ghost && <BlenderDrone state={ghost} ghost />}
+      </Suspense>
+      <VelocityTrails state={state} enabled={effectsEnabled && cameraMode === "FPV"} />
       {path.length > 1 && cameraMode !== "FPV" && (
         <Line
           points={path.map(visual)}
@@ -482,6 +548,8 @@ export function FlightScene({
         lookRef={lookRef ?? defaultLook}
         fov={fov}
         cameraTilt={cameraTilt}
+        effectsEnabled={effectsEnabled}
+        stabilizeView={stabilizeView}
         onFps={onFps}
         onCapture={onCapture}
       />

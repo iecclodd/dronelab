@@ -129,10 +129,10 @@ export function PizzeriaWorld({ scenario }: { scenario?: Scenario }) {
     <>
       <color attach="background" args={["#090d1b"]} />
       <fog attach="fog" args={["#10142a", 18, 62]} />
-      <ambientLight intensity={0.34} color="#766aa8" />
-      <hemisphereLight args={["#51487c", "#111022", 0.62]} />
-      <directionalLight position={[-12, 15, 8]} intensity={1.75} color="#ffe2a4" castShadow shadow-mapSize={[1024, 1024]} shadow-camera-left={-28} shadow-camera-right={28} shadow-camera-top={25} shadow-camera-bottom={-25} shadow-bias={-0.0004} />
-      <pointLight position={[15, 4.4, 0]} intensity={20} distance={19} decay={2} color="#ffb95a" />
+      <ambientLight intensity={0.8} color="#aaa0c9" />
+      <hemisphereLight args={["#8277a9", "#242039", 0.85]} />
+      <directionalLight position={[-12, 15, 8]} intensity={1.2} color="#ffe2a4" castShadow shadow-mapSize={[1024, 1024]} shadow-camera-left={-28} shadow-camera-right={28} shadow-camera-top={25} shadow-camera-bottom={-25} shadow-bias={-0.0004} />
+      <pointLight position={[12, 4.8, 0]} intensity={100} distance={22} decay={1.5} color="#ffd5a0" />
       <pointLight position={[1, 3.6, -13]} intensity={7} distance={13} decay={2} color="#55bfd4" />
       <pointLight position={[-12, 3.1, 6]} intensity={5} distance={11} decay={2} color="#7868c5" />
       <CheckerFloor gradientMap={gradientMap} />

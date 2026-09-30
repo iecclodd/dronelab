@@ -1,5 +1,7 @@
 # Validation record
 
+For the latest cel-shaded arcade release, controls, sound and Blender model, see [anime FPV validation](ANIME_FPV_VALIDATION.md).
+
 For the subsequent FPV game redesign and two new worlds, see [FPV validation](FPV_VALIDATION.md). The evidence below describes the original research-workbench release.
 
 Executed locally on 2026-09-29. Effective child model routing was unverified for every role; the runtime exposed agent status but no authoritative child model/effort metadata.
