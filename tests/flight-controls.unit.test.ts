@@ -7,6 +7,7 @@ import {
   flightForward,
   horizontalForward,
   keyboardFlightAxes,
+  levelFlightQuaternion,
   mode2Axes,
 } from "../apps/web/src/flight-controls";
 
@@ -56,6 +57,65 @@ describe("flight control helpers", () => {
         mapId: "valley",
       }),
     ).toMatchObject({ kind: "nav", velocity: [30, 0, 0] });
+  });
+
+  it("levels arcade Assisted steering while retaining ENU heading and mouse look", () => {
+    const multiply = (a: [number, number, number, number], b: [number, number, number, number]) => [
+      a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+      a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+      a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+      a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+    ] as [number, number, number, number];
+    const yaw = 0.8;
+    const pitchedRolled = multiply(
+      multiply(
+        [0, 0, Math.sin(yaw / 2), Math.cos(yaw / 2)],
+        [0, Math.sin(0.64), 0, Math.cos(0.64)],
+      ),
+      [Math.sin(0.38), 0, 0, Math.cos(0.38)],
+    );
+    const leveled = levelFlightQuaternion(pitchedRolled);
+    const rawForward = flightForward(pitchedRolled);
+    const levelForward = flightForward(leveled);
+    expect(leveled.slice(0, 2)).toEqual([0, 0]);
+    expect(leveled[2]).toBeCloseTo(Math.sin(Math.atan2(rawForward[1], rawForward[0]) / 2));
+    expect(leveled[3]).toBeCloseTo(Math.cos(Math.atan2(rawForward[1], rawForward[0]) / 2));
+    expect(levelForward[2]).toBeCloseTo(0);
+
+    const lookYaw = 0.45;
+    const lookPitch = -0.3;
+    const expectedForward = horizontalForward(leveled, lookYaw, lookPitch);
+    const action = assistedAction(
+      pitchedRolled,
+      lookYaw,
+      { forward: 1, right: 0, up: 0, yaw: 0, flightFeel: "arcade" },
+      lookPitch,
+    );
+    expect(action).toMatchObject({
+      kind: "nav",
+      velocity: [expectedForward[0] * 18, expectedForward[1] * 18, 0],
+    });
+  });
+
+  it("keeps research steering math plus vertical and yaw axes unchanged", () => {
+    const pitched = [0, Math.sin(Math.PI / 8), 0, Math.cos(Math.PI / 8)] as [number, number, number, number];
+    const lookYaw = Math.PI / 4;
+    const expectedResearchForward = horizontalForward(pitched, lookYaw);
+    expect(
+      assistedAction(pitched, lookYaw, { forward: 1, right: 0, up: 0, yaw: 0 }),
+    ).toMatchObject({
+      kind: "nav",
+      velocity: [expectedResearchForward[0] * 7, expectedResearchForward[1] * 7, 0],
+    });
+    const verticalArcade = assistedAction(pitched, lookYaw, {
+      forward: 0,
+      right: 0,
+      up: -0.5,
+      yaw: -0.7,
+      flightFeel: "arcade",
+    });
+    expect(verticalArcade).toMatchObject({ kind: "nav", velocity: [0, 0, -9] });
+    expect(verticalArcade.kind === "nav" && verticalArcade.yawRate).toBeCloseTo(-1.05);
   });
 
   it("preserves FLU rate axes and clamps manual throttle", () => {

@@ -82,6 +82,18 @@ export function horizontalForward(
   return [east, north, 0];
 }
 
+/**
+ * Removes bank and pitch while retaining the FLU forward axis's ENU heading.
+ * Arcade Assisted uses this for movement so its horizon can stay readable
+ * while mouse look remains relative to the rendered camera rig.
+ */
+export function levelFlightQuaternion(quaternion: Q4): Q4 {
+  const forward = rotate(quaternion, [1, 0, 0]);
+  const heading = Math.atan2(forward[1], forward[0]);
+  const half = heading / 2;
+  return [0, 0, Math.sin(half), Math.cos(half)];
+}
+
 /** Player-facing setpoints. The simulator independently enforces its profile cap. */
 export function assistedSpeeds(
   flightFeel: FlightFeel = "research",
@@ -110,7 +122,11 @@ export function assistedAction(
 ): Action {
   const speeds = assistedSpeeds(input.flightFeel, input.mapId);
   const speed = input.boost ? speeds.boost : speeds.cruise;
-  const forward = horizontalForward(quaternion, lookYaw, lookPitch);
+  const steeringQuaternion =
+    input.flightFeel === "arcade"
+      ? levelFlightQuaternion(quaternion)
+      : quaternion;
+  const forward = horizontalForward(steeringQuaternion, lookYaw, lookPitch);
   const right: V3 = [forward[1], -forward[0], 0];
   return {
     kind: "nav",
