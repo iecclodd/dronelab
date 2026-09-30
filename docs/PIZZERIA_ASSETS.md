@@ -1,6 +1,6 @@
 # Pizzeria fan-map assets
 
-`Fazbear Fan Pizzeria` is an unofficial fan map. Its room geometry, props,
+`Freddy’s Pizzeria` is an unofficial fan map. Its room geometry, props,
 lighting, checker tiles, signs, and stage bear are original procedural React
 Three Fiber geometry in this repository; no model, texture, audio, or mesh was
 downloaded or copied from a game or a third-party fan project.

@@ -1,7 +1,10 @@
 # DroneLab
+The main experience is an FPV browser playground: Explore defaults to free flight, first-person camera, and Assisted handling; Acro is a distinct body-rate/manual-throttle mode. Flight journal and AI Lab preserve replay, experiments, training, and browser-agent tools as secondary features.
 Vite + React + TypeScript static website; Three/R3F render browser-worker Rapier ENU physics. TFJS CPU worker trains navigation behavior cloning; IndexedDB stores device-local runs and policies. No visitor backend requirement.
 
 Ownership: packages/contracts = shared versioned interfaces; packages/sim-core = DOM-free physics/controllers/tasks; apps/web/src = UI, workers, storage; apps/api and packages/mcp-server = optional authenticated relay; tests = unit/browser acceptance; docs = evidence/specifications.
+
+FPV boundaries: packages/contracts/free-world.ts and pizzeria-world.ts define ENU map geometry shared with physics; OpenWorld/PizzeriaWorld render the matching world, Scene owns the camera/drone, flight-controls owns input, and GameOverlay/game.css own the player HUD. Keep optional mapId backward compatible. Significant playable objects must match colliders. Use original or clearly licensed assets, record provenance, and avoid adding runtime external asset dependencies. Pointer-lock loss, blur, and visibility changes must release controls and pause. Test real browser input, not only pure input helpers.
 
 Commands: npm install; npm run dev; npm run typecheck; npm run lint; npm test; npm run build; npm run preview; npm run test:browser. Deploy dist as static HTTPS assets. Never bundle provider keys. No real-drone connections. No state fabrication. Preserve terminal transitions and entire-episode evaluation splits. Store generated runs in browser or outputs, never bulk commit.
 

@@ -422,6 +422,7 @@ async function handle(request: WorkerRequest) {
         break;
       case "get":
         result = {
+          config: env.config,
           state: env.state(),
           observation: env.observe(),
           scenario: env.scenario,

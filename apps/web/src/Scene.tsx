@@ -3,6 +3,8 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, Grid, Line, Text } from "@react-three/drei";
 import * as THREE from "three";
 import type { PhysicalState, Scenario, V3 } from "../../../packages/contracts";
+import { OpenWorld } from "./OpenWorld";
+import { PizzeriaWorld } from "./PizzeriaWorld";
 import type { FlightLook } from "./flight-controls";
 export type CameraMode = "Chase" | "FPV" | "Orbit";
 export const visual = (v: V3): [number, number, number] => [v[0], v[2], -v[1]];
@@ -458,14 +460,14 @@ export function FlightScene({
   return (
     <Canvas
       shadows={{ type: THREE.PCFShadowMap }}
-      camera={{ position: [10, 7, 12], fov: 57, near: 0.05, far: 240 }}
+      camera={{ position: [10, 7, 12], fov: 57, near: 0.05, far: 650 }}
       dpr={[1, 1.5]}
       gl={{ antialias: true, preserveDrawingBuffer: true }}
     >
-      <World scenario={scenario} />
+      {scenario?.id === "free" ? scenario.mapId === "pizzeria" ? <PizzeriaWorld scenario={scenario} /> : <OpenWorld scenario={scenario} /> : <World scenario={scenario} />}
       <Drone state={state} hidden={cameraMode === "FPV"} />
       {ghost && <Drone state={ghost} ghost />}
-      {path.length > 1 && (
+      {path.length > 1 && cameraMode !== "FPV" && (
         <Line
           points={path.map(visual)}
           color="#e9b853"

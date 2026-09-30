@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { Text } from "@react-three/drei";
 import type { Scenario, V3 } from "../../../packages/contracts";
 import { FREE_WORLD } from "../../../packages/contracts/free-world";
+import { WorldDetails } from "./WorldDetails";
 
 const visual = ([x, y, z]: V3): [number, number, number] => [x, z, -y];
 const visualSize = ([x, y, z]: V3): [number, number, number] => [x, z, y];
@@ -37,7 +38,7 @@ export function OpenWorld({ scenario }: { scenario?: Scenario }) {
   const obstacles = scenario?.id === "free" ? scenario.obstacles : FREE_WORLD.obstacles;
 
   return (
-    <group name="aster-valley">
+    <>
       <color attach="background" args={["#94c8dd"]} />
       <fog attach="fog" args={["#94c8dd", 115, 390]} />
       <hemisphereLight args={["#ffe8bb", "#486b69", 2.35]} />
@@ -95,6 +96,7 @@ export function OpenWorld({ scenario }: { scenario?: Scenario }) {
             <meshBasicMaterial color={landmark.color} transparent opacity={0.76} />
           </mesh>
           <Text
+            font={`${import.meta.env.BASE_URL}fonts/IBMPlexMono-Regular.woff`}
             position={[0, 3.2, 0]}
             fontSize={1.5}
             color="#fff1c8"
@@ -112,6 +114,7 @@ export function OpenWorld({ scenario }: { scenario?: Scenario }) {
       <MountainSilhouette position={[238, -82, 32]} scale={70} />
       <MountainSilhouette position={[-242, 84, 38]} scale={80} />
       <MountainSilhouette position={[36, 255, 35]} scale={76} />
-    </group>
+      <WorldDetails />
+    </>
   );
 }

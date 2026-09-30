@@ -60,15 +60,7 @@ test("manual W/Space movement records in realtime and Stop freezes it", async ({
   page,
 }) => {
   await open(page);
-  await page
-    .getByRole("button", { name: "Free flight Open test range" })
-    .click();
-  await page.waitForFunction(
-    () =>
-      !window.dronelab.getState().busy &&
-      window.dronelab.getState().config.scenario === "free",
-  );
-  await page.getByRole("button", { name: "Start fresh mission" }).click();
+  await page.getByRole("button", { name: "Take flight", exact: true }).click();
   await page.waitForFunction(() => window.dronelab.getState().state.step > 0);
   const before = await page.evaluate(() => window.dronelab.getState().state);
   await page.keyboard.down("KeyW");
@@ -79,6 +71,8 @@ test("manual W/Space movement records in realtime and Stop freezes it", async ({
   const moving = await page.evaluate(() => window.dronelab.getState().state);
   expect(moving.step).toBeGreaterThan(before.step);
   expect(moving.position).not.toEqual(before.position);
+  await page.getByRole("button", { name: "Flight setup", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Flight setup" })).toBeVisible();
   await page.getByRole("button", { name: "Stop / cancel" }).click();
   const stopped = await page.evaluate(() => window.dronelab.getState().state);
   await page.waitForTimeout(200);
@@ -148,7 +142,7 @@ test("failed experiment is a failed job and an old job cannot cancel flight", as
   page,
 }) => {
   await open(page);
-  await page.getByRole("button", { name: "Experiment", exact: true }).click();
+  await page.getByRole("button", { name: "AI Lab", exact: true }).click();
   await page.getByLabel("Max seconds").fill("0");
   const failed = await page.evaluate(() =>
     window.droneTools.dispatch("start_experiment"),
@@ -198,7 +192,7 @@ test("bounded scripted Hover, Gates, and Landing experiments each complete succe
   page,
 }) => {
   await open(page);
-  await page.getByRole("button", { name: "Experiment", exact: true }).click();
+  await page.getByRole("button", { name: "AI Lab", exact: true }).click();
   await page.getByLabel("Episode budget").fill("1");
   for (const [scenario, seed] of [
     ["hover", 1001],
@@ -218,10 +212,10 @@ test("replay slider selects a saved frame without a realtime overwrite", async (
   page,
 }) => {
   await open(page);
-  await page.getByRole("button", { name: "Experiment", exact: true }).click();
+  await page.getByRole("button", { name: "AI Lab", exact: true }).click();
   await page.getByLabel("Episode budget").fill("1");
   await runScriptedExperiment(page, "hover", 1001);
-  await page.getByRole("button", { name: "Review", exact: true }).click();
+  await page.getByRole("button", { name: "Flight journal", exact: true }).click();
   await page.getByRole("button", { name: /hover · scripted/ }).click();
   await page.getByLabel("Replay position").fill("1");
   const selected = await page.evaluate(
@@ -237,6 +231,7 @@ test("unavailable relay never presents a false connected state", async ({
   page,
 }) => {
   await open(page);
+  await page.getByRole("button", { name: "AI Lab", exact: true }).click();
   await page.getByRole("button", { name: "Connect AI" }).click();
   await expect(page.getByRole("status")).toHaveText("Not connected");
   await page.getByLabel("Relay URL").fill("http://example.invalid");
@@ -254,7 +249,7 @@ test("mobile primary navigation remains visible and keyboard reachable", async (
   await expect(
     page.getByRole("navigation", { name: "Primary navigation" }),
   ).toBeVisible();
-  for (const label of ["Fly", "Experiment", "Review"])
+  for (const label of ["Explore", "AI Lab", "Flight journal"])
     await expect(
       page.getByRole("button", { name: label, exact: true }),
     ).toBeVisible();

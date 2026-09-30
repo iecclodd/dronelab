@@ -3,6 +3,7 @@
   src: url("/fonts/IBMPlexMono-Regular.woff2") format("woff2");
   font-display: swap;
 }
+/* Player-first FPV shell. Research tools keep their own scrollable workspace. */
 html {
   font-size: 16px;
 }

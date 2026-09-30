@@ -2,6 +2,10 @@
 
 DroneLab is a Vite/React/TypeScript static site with browser-worker Rapier physics, TFJS CPU training, IndexedDB persistence, and an optional Node 20+ relay. Ownership boundaries are `packages/contracts` (shared interfaces), `packages/sim-core` (DOM-free physics/controllers/tasks), `apps/web/src` (UI/workers/storage), `apps/api` and `packages/mcp-server` (optional authenticated relay), tests (unit/browser acceptance), and `docs` (evidence/specifications).
 
+The primary product is now an FPV game. `flight-controls.ts` owns keyboard/gamepad/mouse state; `Scene.tsx` owns camera transforms; `GameOverlay.tsx` and `game.css` own the flight HUD. Shared `free-world.ts` and `pizzeria-world.ts` definitions connect rendered structures with physical colliders. The original research functionality lives in AI Lab and Flight journal. Keep local assets self-contained and record model provenance. New control changes need real browser input checks and review of ENU/FLU signs, pointer lock, timer lifecycle, and throttle command lifetime.
+
+Browser verification has one exclusive runner: never launch overlapping Playwright commands against the shared ports and artifact directories. Read-only review agents must not start a second browser suite. Three substantial FPV writers used isolated worktrees; parent UI and browser-test edits used disjoint files in the primary checkout. The depth-one/seven-concurrent ceiling remained in force; effective child routing was not observable.
+
 ## Working rules
 
 Use bounded depth-one agents with a seven-concurrent ceiling. Reuse the shared repository map and isolated worktrees for disjoint writers; never have two agents edit the same file. Parent owns integration, final validation, and publishing. Report requested and effective model/effort separately; effective routing is unverified unless runtime metadata proves it. Preserve terminal transitions, complete-episode split IDs, and user changes. Store generated runs in browser storage or outputs; do not bulk commit them. Never connect a real drone or bundle provider secrets.

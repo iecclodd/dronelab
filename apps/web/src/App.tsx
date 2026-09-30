@@ -8,6 +8,8 @@ import {
   type ReactNode,
 } from "react";
 import { FlightScene, type CameraMode } from "./Scene";
+import { GameOverlay } from "./GameOverlay";
+import { useFlightControls } from "./flight-controls";
 import { ConnectionPanel } from "./ConnectionPanel";
 import { SimulationClient } from "./simulation";
 import { TrainingClient, type TrainingProgress } from "./learning";
@@ -96,13 +98,14 @@ export default function App() {
     },
     [],
   );
-  const keys = useRef(new Set<string>());
   const latestStep = useRef(0);
   const lastUi = useRef(0);
   const alive = useRef(false);
   const cancelled = useRef(false);
   const gamepadZero = useRef<number[]>([]);
   const modeRef = useRef("paused");
+  const resetInputRef = useRef<() => void>(() => undefined);
+  const playbackEpoch = useRef(0);
   const [batchProgress, setBatchProgress] = useState("");
   const [view, setView] = useState<View>(
       location.hash === "#experiment"
@@ -111,14 +114,14 @@ export default function App() {
           ? "Review"
           : "Fly",
     ),
-    [config, setConfig] = useState<SimConfig>({ ...DEFAULT_CONFIG }),
+    [config, setConfig] = useState<SimConfig>({ ...DEFAULT_CONFIG, scenario: "free", mapId: "valley", maxSeconds: 120 }),
     [controller, setController] = useState<ControllerId>("manual"),
     [scenario, setScenario] = useState<Scenario>(),
     [flight, setFlight] = useState<PhysicalState>(),
     [observation, setObservation] = useState<unknown>(),
     [mode, setMode] = useState("paused"),
     [path, setPath] = useState<V3[]>([]),
-    [camera, setCamera] = useState<CameraMode>("Chase"),
+    [camera, setCamera] = useState<CameraMode>("FPV"),
     [fps, setFps] = useState(0),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(true),
@@ -135,6 +138,9 @@ export default function App() {
     [scrub, setScrub] = useState(0),
     [ai, setAi] = useState(false),
     [gamepad, setGamepad] = useState("Keyboard");
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [fov, setFov] = useState(85);
+  const [cameraTilt, setCameraTilt] = useState(10);
   const policy = policies.find((p) => p.id === policyId);
   useEffect(() => {
     history.replaceState(null, "", "#" + view.toLowerCase());
@@ -157,6 +163,8 @@ export default function App() {
   const reset = useCallback(
     async (next = config, control = controller) => {
       try {
+        playbackEpoch.current++;
+        resetInputRef.current();
         setBusy(true);
         modeRef.current = "paused";
         const result = await sim.current!.request<any>("reset", {
@@ -212,16 +220,16 @@ export default function App() {
         if (modeRef.current === "replay") return;
         stateRef.current = p.state;
         latestStep.current = p.state.step;
-        setObservation(p.observation);
         modeRef.current = p.mode || "paused";
-        setMode(p.mode || "paused");
-        if (p.scenario) setScenario(p.scenario);
-        if (p.config) setConfig(p.config);
-        if (p.controller) setController(p.controller);
-        setPath((old) => [...old.slice(-499), p.state.position]);
         const now = performance.now();
-        if (now - lastUi.current > 100) {
+        if (now - lastUi.current > 100 || p.state.terminated || p.state.truncated) {
           lastUi.current = now;
+          setObservation(p.observation);
+          setMode(p.mode || "paused");
+          if (p.scenario) setScenario(p.scenario);
+          if (p.config) setConfig(p.config);
+          if (p.controller) setController(p.controller);
+          setPath((old) => [...old.slice(-499), p.state.position]);
           setFlight(p.state);
         }
       }
@@ -258,110 +266,6 @@ export default function App() {
     };
   }, []); // clients are intentionally created once
   useEffect(() => {
-    const clear = () => {
-      keys.current.clear();
-      if (modeRef.current === "realtime")
-        void sim.current
-          ?.request("mode", { mode: "paused" })
-          .then(() => {
-            if (alive.current) {
-              setMode("paused");
-              setError(
-                "Flight paused because the window lost focus. Resume explicitly.",
-              );
-            }
-          })
-          .catch(report);
-    };
-    const down = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement;
-      if (
-        ["INPUT", "SELECT", "TEXTAREA"].includes(el.tagName) ||
-        el.isContentEditable
-      )
-        return;
-      if (
-        [
-          "KeyW",
-          "KeyA",
-          "KeyS",
-          "KeyD",
-          "Space",
-          "ShiftLeft",
-          "ShiftRight",
-          "KeyQ",
-          "KeyE",
-        ].includes(e.code)
-      ) {
-        e.preventDefault();
-        keys.current.add(e.code);
-      }
-    };
-    const up = (e: KeyboardEvent) => keys.current.delete(e.code);
-    const visibility = () => {
-      if (document.hidden) clear();
-    };
-    window.addEventListener("keydown", down);
-    window.addEventListener("keyup", up);
-    window.addEventListener("blur", clear);
-    document.addEventListener("visibilitychange", visibility);
-    const id = window.setInterval(() => {
-      if (
-        modeRef.current !== "realtime" ||
-        !["manual", "rate"].includes(controller)
-      )
-        return;
-      const k = keys.current;
-      const gp = navigator.getGamepads?.().find(Boolean);
-      const axis = (i: number) =>
-        Math.max(
-          -1,
-          Math.min(1, (gp?.axes[i] ?? 0) - (gamepadZero.current[i] ?? 0)),
-        );
-      let action: Action;
-      if (controller === "rate") {
-        action = {
-          kind: "rate",
-          rates: [
-            (k.has("KeyW") ? 1 : 0) - (k.has("KeyS") ? 1 : 0) || -axis(1),
-            (k.has("KeyD") ? 1 : 0) - (k.has("KeyA") ? 1 : 0) || axis(0),
-            (k.has("KeyE") ? 1 : 0) - (k.has("KeyQ") ? 1 : 0) || axis(2),
-          ],
-          thrust: Math.max(
-            0,
-            Math.min(
-              1,
-              0.42 +
-                (k.has("Space") ? 0.22 : 0) -
-                (k.has("ShiftLeft") || k.has("ShiftRight") ? 0.22 : 0) -
-                axis(3) * 0.28,
-            ),
-          ),
-        };
-      } else
-        action = {
-          kind: "nav",
-          velocity: [
-            (k.has("KeyD") ? 3 : 0) - (k.has("KeyA") ? 3 : 0) || axis(0) * 3,
-            (k.has("KeyW") ? 3 : 0) - (k.has("KeyS") ? 3 : 0) || -axis(1) * 3,
-            (k.has("Space") ? 3 : 0) -
-              (k.has("ShiftLeft") || k.has("ShiftRight") ? 3 : 0),
-          ],
-          yawRate:
-            (k.has("KeyE") ? 1.5 : 0) - (k.has("KeyQ") ? 1.5 : 0) ||
-            axis(2) * 1.5,
-        };
-      void sim.current?.request("action", { action }).catch(() => undefined);
-    }, 65);
-    return () => {
-      window.removeEventListener("keydown", down);
-      window.removeEventListener("keyup", up);
-      window.removeEventListener("blur", clear);
-      document.removeEventListener("visibilitychange", visibility);
-      clearInterval(id);
-    };
-  }, [controller, report]);
-  useEffect(() => {
     const id = window.setInterval(() => {
       const gp = navigator.getGamepads?.().find(Boolean);
       setGamepad(gp ? `${gp.id.slice(0, 22)} connected` : "Keyboard only");
@@ -395,6 +299,9 @@ export default function App() {
     config?: Partial<SimConfig>;
   }): Promise<void> => {
     try {
+      playbackEpoch.current++;
+      resetInputRef.current();
+      setSetupOpen(false);
       setBusy(true);
       modeRef.current = "paused";
       setSelected(undefined);
@@ -446,6 +353,7 @@ export default function App() {
   const pause = async () => {
     try {
       const next = modeRef.current === "paused" ? "realtime" : "paused";
+      if (next === "realtime") setSetupOpen(false);
       await sim.current!.request("mode", {
         mode: next,
       });
@@ -454,6 +362,69 @@ export default function App() {
     } catch (e) {
       report(e);
     }
+  };
+  const flightControls = useFlightControls({
+    state: stateRef,
+    controller,
+    modeRef,
+    cameraMode: camera,
+    cameraTilt,
+    enabled: view === "Fly" && !ai && !setupOpen && !busy,
+    sendAction: (action: Action) => { void sim.current?.request("action", { action }).catch(() => undefined); },
+    pause: () => { if (modeRef.current === "realtime") void pauseFlight().catch(report); },
+    restart: () => { if (!busy) void start().catch(report); },
+    cycleCamera: () => setCamera((c) => c === "FPV" ? "Chase" : c === "Chase" ? "Orbit" : "FPV"),
+    calibrationRef: gamepadZero,
+  });
+  resetInputRef.current = flightControls.resetControls;
+  const changeView = (next: View) => {
+    if (next !== "Review" && selected) {
+      playbackEpoch.current++;
+      setBusy(true);
+      void (async () => {
+        try {
+          await sim.current!.request("mode", { mode: "paused" });
+          const current = await sim.current!.request<any>("get");
+          if (!alive.current) return;
+          resetInputRef.current();
+          stateRef.current = current.state;
+          latestStep.current = current.state.step;
+          ghostRef.current = undefined;
+          setFlight(current.state);
+          setScenario(current.scenario);
+          setConfig(current.config);
+          setController(current.controller);
+          setObservation(current.observation);
+          setPath([current.state.position]);
+          modeRef.current = "paused";
+          setMode("paused");
+          setSelected(undefined);
+          setScrub(0);
+          setSetupOpen(false);
+          setView(next);
+        } catch (e) { report(e); }
+        finally { if (alive.current) setBusy(false); }
+      })();
+      return;
+    }
+    if (modeRef.current === "realtime") void pauseFlight().catch(report);
+    if (document.pointerLockElement) void document.exitPointerLock();
+    setSetupOpen(false);
+    setView(next);
+  };
+  const launchGame = () => {
+    setSetupOpen(false);
+    flightControls.resetLook();
+    void start().catch(report);
+  };
+  const changeWorld = (mapId: "valley" | "pizzeria") => {
+    flightControls.resetLook();
+    setCamera("FPV");
+    void reset({ ...config, scenario: "free", mapId, maxSeconds: 120 }).catch(report);
+  };
+  const openSetup = () => {
+    if (modeRef.current === "realtime") void pauseFlight().catch(report);
+    setSetupOpen((open) => !open);
   };
   const runExperiment = async (): Promise<RunRecord[] | void> => {
     try {
@@ -557,6 +528,8 @@ export default function App() {
     }
   };
   const playback = (run: RunRecord, index: number) => {
+    const epoch = ++playbackEpoch.current;
+    modeRef.current = "replay";
     void sim.current
       ?.request("mode", { mode: "paused" })
       .catch(() => undefined);
@@ -564,7 +537,7 @@ export default function App() {
     setScrub(index);
     void sim.current
       ?.request<Scenario>("scenario", { config: run.config })
-      .then(setScenario)
+      .then((next) => { if (epoch === playbackEpoch.current) setScenario(next); })
       .catch(report);
     const transition = run.transitions[index];
     if (transition) {
@@ -615,6 +588,9 @@ export default function App() {
         observation,
         error,
         mode: modeRef.current,
+        camera,
+        look: { ...flightControls.lookRef.current },
+        pointerLocked: flightControls.locked,
         rgbAvailable: !!captureRef.current,
       }),
       setView,
@@ -647,6 +623,8 @@ export default function App() {
     experimentControl,
     budget,
     error,
+    camera,
+    flightControls.locked,
   ]);
   const lossPath = useMemo(
     () =>
@@ -660,30 +638,28 @@ export default function App() {
   );
   const selectedMission = missions.find((m) => m.id === config.scenario)!;
   return (
-    <div className="app">
+    <div className={`app ${view === "Fly" ? "game-mode" : "lab-mode"} ${setupOpen ? "setup-open" : ""}`}>
       <header>
         <button
           className="brand"
-          onClick={() => setView("Fly")}
+          onClick={() => changeView("Fly")}
           aria-label="DroneLab home"
         >
           <i />
-          DRONELAB <small>FLIGHT RESEARCH</small>
+          DRONELAB <small>FPV PLAYGROUND</small>
         </button>
         <nav aria-label="Primary navigation">
-          {(["Fly", "Experiment", "Review"] as View[]).map((v) => (
+          {(["Fly", "Review", "Experiment"] as View[]).map((v) => (
             <button
               key={v}
               className={view === v ? "active" : ""}
-              onClick={() => setView(v)}
+              onClick={() => changeView(v)}
             >
-              {v}
+              {v === "Fly" ? "Explore" : v === "Review" ? "Flight journal" : "AI Lab"}
             </button>
           ))}
         </nav>
-        <button className="connect" onClick={() => setAi(true)}>
-          Connect AI <span>↗</span>
-        </button>
+        {view === "Experiment" ? <button className="connect" onClick={() => setAi(true)}>Connect AI <span>↗</span></button> : <div className="header-status"><i /> BROWSER FLIGHT / LOCAL SAVES</div>}
       </header>
       {error && (
         <div className="notice" role="alert">
@@ -694,11 +670,17 @@ export default function App() {
         </div>
       )}
       <main>
-        <aside className="sidebar">
-          <div className="eyebrow">MISSION / 01</div>
-          <h1>{view === "Fly" ? selectedMission.label : view}</h1>
+        <aside className={`sidebar ${view === "Fly" ? "flight-settings" : ""}`} hidden={view === "Fly" && !setupOpen}>
+          {view === "Fly" && <button className="settings-close" onClick={() => setSetupOpen(false)} aria-label="Close flight setup">×</button>}
+          <div className="eyebrow">{view === "Fly" ? "TUNE YOUR FLIGHT" : "DRONELAB / WORKSHOP"}</div>
+          <h1>{view === "Fly" ? "Flight setup" : view === "Experiment" ? "AI Lab" : "Flight journal"}</h1>
           {view === "Fly" && (
             <>
+              <p className="copy">{selectedMission.label} · Change your view, handling, or practice mission here.</p>
+              <label>Field of view <span>{fov}°</span><input aria-label="Field of view" type="range" min="60" max="110" value={fov} onChange={e => setFov(+e.target.value)} /></label>
+              <label>Camera tilt <span>{cameraTilt}°</span><input aria-label="Camera tilt" type="range" min="0" max="45" value={cameraTilt} onChange={e => setCameraTilt(+e.target.value)} /></label>
+              <label>Look sensitivity <span>{n(flightControls.sensitivity, 1)}×</span><input aria-label="Look sensitivity" type="range" min="0.25" max="2" step="0.05" value={flightControls.sensitivity} onChange={e => flightControls.setSensitivity(+e.target.value)} /></label>
+              <button className="wide" onClick={flightControls.resetLook}>Recenter camera</button>
               <div className="mission-list">
                 {missions.map((m) => (
                   <button
@@ -871,76 +853,31 @@ export default function App() {
             />
           )}
         </aside>
-        <section className="stage">
+        <section className="stage" id="flight-stage" aria-label="Flight world">
           <SceneGuard onFailure={() => attachCapture(undefined)}>
             <FlightScene
               state={stateRef}
               ghost={selected ? ghostRef : undefined}
               scenario={scenario}
               cameraMode={camera}
+              lookRef={flightControls.lookRef}
+              fov={fov}
+              cameraTilt={cameraTilt}
               path={path}
               onFps={setFps}
               onCapture={attachCapture}
             />
           </SceneGuard>
-          <div className="hud top">
-            <div>
-              <span>ALTITUDE</span>
-              <b>
-                {n(flight?.position[2] ?? 0)}
-                <em>m</em>
-              </b>
-            </div>
-            <div>
-              <span>SPEED</span>
-              <b>
-                {n(Math.hypot(...(flight?.velocity ?? [0, 0, 0])))}
-                <em>m/s</em>
-              </b>
-            </div>
-            <div>
-              <span>MISSION TIME</span>
-              <b>
-                {n(flight?.time ?? 0)}
-                <em>s</em>
-              </b>
-            </div>
-          </div>
-          <div className="hud right">
-            <span>
-              COLLISIONS <b>{flight?.collisions ?? 0}</b>
-            </span>
-            <span>
-              BATTERY <b>{n((flight?.battery ?? 0) * 100, 0)}%</b>
-            </span>
-            <span>
-              FPS <b>{fps}</b>
-            </span>
-          </div>
-          <button
-            className="capture"
-            onClick={downloadCapture}
-            aria-label="Capture frame"
-          >
-            Capture frame
-          </button>
-          <div className="keyguide">
-            <span>
-              <kbd>W</kbd>/<kbd>S</kbd> NORTH
-            </span>
-            <span>
-              <kbd>D</kbd>/<kbd>A</kbd> EAST
-            </span>
-            <span>
-              <kbd>SPACE</kbd> UP
-            </span>
-            <span>
-              <kbd>SHIFT</kbd> DOWN
-            </span>
-            <span>
-              <kbd>Q</kbd>/<kbd>E</kbd> YAW
-            </span>
-          </div>
+          {view === "Fly" ? <GameOverlay
+            flight={flight} scenario={scenario} controller={controller} camera={camera}
+            mode={mode} busy={busy} locked={flightControls.locked} dragging={flightControls.dragging}
+            throttle={flightControls.throttle} lookRef={flightControls.lookRef} fps={fps}
+            onLaunch={launchGame} onPause={() => void pause()} onRestart={launchGame}
+            onLook={() => { setSetupOpen(false); flightControls.engageLook(); }}
+            onSetup={openSetup} onController={(c) => void chooseController(c)}
+            onCamera={setCamera} onWorldChange={changeWorld}
+          /> : <div className="lab-scene-label">{view === "Experiment" ? "AI LAB / SIMULATION VIEW" : "FLIGHT JOURNAL / PLAYBACK"}</div>}
+          {view !== "Fly" && <button className="capture" onClick={downloadCapture} aria-label="Capture frame">Capture frame</button>}
           {selected && (
             <div className="replay">
               <b>REPLAY · {selected.id.slice(0, 8)}</b>

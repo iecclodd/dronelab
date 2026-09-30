@@ -25,6 +25,7 @@ import {
   type FreeWorldDefinition,
   type FreeWorldMapId,
 } from "../contracts/free-world.ts";
+import { PIZZERIA_WORLD } from "../contracts/pizzeria-world.ts";
 
 export type Vec3 = V3;
 type Quat = [number, number, number, number];
@@ -85,13 +86,11 @@ class Rng {
 }
 
 /**
- * Registry seam for additional free-flight maps. The pizzeria map is added by
- * its owner during integration; the simulator and renderer always consume the
- * same obstacle boxes from the selected definition.
+ * The simulator and renderer consume the same obstacle boxes for each map.
  */
 export const FREE_WORLD_MAPS: Partial<
   Record<FreeWorldMapId, FreeWorldDefinition>
-> = { valley: FREE_WORLD };
+> = { valley: FREE_WORLD, pizzeria: PIZZERIA_WORLD };
 
 export function freeWorldForMap(
   mapId: FreeWorldMapId | undefined,
@@ -109,7 +108,7 @@ export function createFreeScenario(
     name: world.name,
     description: `Explore ${world.name} inside its documented flight bounds.`,
     spawn: [...world.spawn] as V3,
-    targets: [[70, 0, 8]],
+    targets: [mapId === "pizzeria" ? [8, 0, 2] : [70, 0, 8]],
     pad: [0, 0, 0],
     obstacles: world.obstacles,
   };

@@ -363,4 +363,35 @@ describe("DroneEnvironment", () => {
     expect(hit.state.collisions).toBe(1);
     env.dispose();
   });
+
+  it("switches to the indoor map and flies its clear center aisle before hitting the stage bear", () => {
+    const env = new DroneEnvironment(config({ scenario: "free", mapId: "pizzeria", maxSeconds: 30 }));
+    expect(env.scenario.mapId).toBe("pizzeria");
+    expect(env.scenario.spawn).toEqual([-15, 0, 1.45]);
+    const action = { kind: "nav" as const, velocity: [2, 0, 0] as [number, number, number], yawRate: 0 };
+    let result = env.step(action, 4);
+    for (let i = 0; i < 900 && !result.state.terminated && !result.state.truncated; i++) result = env.step(action, 4);
+    expect(result.state.reason).toBe("collision");
+    expect(result.state.position[0]).toBeGreaterThan(13);
+    expect(result.state.collisions).toBe(1);
+    env.dispose();
+  });
+
+  it("uses the pizzeria ceiling rather than the outdoor ceiling", () => {
+    const env = new DroneEnvironment(config({ scenario: "free", mapId: "pizzeria" }));
+    (env as any).drone.setTranslation({ x: 0, y: 0, z: 6.4 }, true);
+    expect(env.step({ kind: "nav", velocity: [0, 0, 0], yawRate: 0 }, 1).state.reason).toBe("out_of_bounds");
+    env.dispose();
+  });
+
+  it("keeps scripted pizzeria guidance inside the room and clear of furniture", () => {
+    const env = new DroneEnvironment(config({ scenario: "free", mapId: "pizzeria", maxSeconds: 30 }));
+    let result = env.step(env.scriptedAction(), 4);
+    while (!result.state.terminated && !result.state.truncated)
+      result = env.step(env.scriptedAction(), 4);
+    expect(result.state.reason).toBe("timeout");
+    expect(result.state.collisions).toBe(0);
+    expect(Math.hypot(...result.state.position.map((v, i) => v - env.scenario.targets[0][i]))).toBeLessThan(2);
+    env.dispose();
+  });
 });
