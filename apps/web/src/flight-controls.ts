@@ -2,7 +2,12 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import { ACTION_REPEAT, DT, type Action, type ControllerId, type FlightFeel, type PhysicalState, type Q4, type V3 } from "../../../packages/contracts";
 import { combatEvents, combatInput, queueKick, takeKick } from "./combat-store";
 
-export type FlightLook = { yaw: number; pitch: number };
+/**
+ * `yaw`/`pitch` are relative to the airframe heading. In arcade Explore the
+ * camera also owns an absolute ENU heading, `world`; `yaw` is then derived
+ * from it each frame, and the airframe chases it.
+ */
+export type FlightLook = { yaw: number; pitch: number; world?: number };
 
 const DEADZONE = 0.12;
 const MAX_LOOK_PITCH = (80 * Math.PI) / 180;
@@ -343,7 +348,9 @@ export function useFlightControls({
   }, []);
   const applyLook = useCallback((movementX: number, movementY: number) => {
     const look = lookRef.current;
-    look.yaw -= movementX * BASE_MOUSE_SENSITIVITY * sensitivityRef.current;
+    const turn = movementX * BASE_MOUSE_SENSITIVITY * sensitivityRef.current;
+    look.yaw -= turn;
+    if (look.world !== undefined) look.world -= turn;
     look.pitch = clamp(
       look.pitch - movementY * BASE_MOUSE_SENSITIVITY * sensitivityRef.current,
       -MAX_LOOK_PITCH,
@@ -514,7 +521,6 @@ export function useFlightControls({
     let frame = 0;
     let previousTime: number | undefined;
     let sinceLastAction = ACTION_SEND_PERIOD;
-    let previousHeading: number | undefined;
     let dashReady = 0;
     let dashHeld = false;
     const arcade = flightFeel === "arcade";
@@ -525,13 +531,15 @@ export function useFlightControls({
       const flying = enabled && modeRef.current === "realtime";
       combatInput.trigger = flying && arcade && (keys.current.has("KeyF") || mouseFire.current);
       if (arcade && controller === "manual" && state.current) {
-        // Camera-follow: when the airframe turns toward the camera, give the
-        // turn back to the look offset so the camera itself holds still.
+        // Camera-follow: the camera owns an absolute heading (mouse, Q/E);
+        // the look offset is re-derived from it so the airframe chases it.
+        const look = lookRef.current;
         const heading = headingOf(levelFlightQuaternion(state.current.quaternion));
-        if (previousHeading !== undefined) lookRef.current.yaw = wrapAngle(lookRef.current.yaw - wrapAngle(heading - previousHeading));
-        previousHeading = heading;
-        if (flying) lookRef.current.yaw += arcadeKeyboardAxes(keys.current).turn * KEY_TURN_RATE * elapsed;
-      } else previousHeading = undefined;
+        if (look.world === undefined) look.world = heading + look.yaw;
+        if (flying) look.world += arcadeKeyboardAxes(keys.current).turn * KEY_TURN_RATE * elapsed;
+        look.world = wrapAngle(look.world);
+        look.yaw = wrapAngle(look.world - heading);
+      } else lookRef.current.world = undefined;
       if (arcade && flying && controller === "manual") {
         dashReady = Math.max(0, dashReady - elapsed);
         const axes = arcadeKeyboardAxes(keys.current);
@@ -594,7 +602,7 @@ export function useFlightControls({
           boost: axes.boost,
           mapId,
         };
-        if (gamepad.yaw) lookRef.current.yaw += gamepad.yaw * KEY_TURN_RATE * Math.max(elapsed, ACTION_SEND_PERIOD);
+        if (gamepad.yaw && lookRef.current.world !== undefined) lookRef.current.world += gamepad.yaw * KEY_TURN_RATE * Math.max(elapsed, ACTION_SEND_PERIOD);
         const kick = takeKick();
         active = Math.abs(input.forward) > 0 || Math.abs(input.right) > 0 || Math.abs(input.up) > 0 || Math.abs(wrapAngle(lookRef.current.yaw)) > 0.01 || !!kick;
         action = { ...cameraRelativeAction(state.current?.quaternion ?? [0, 0, 0, 1], lookRef.current, input), ...kick };

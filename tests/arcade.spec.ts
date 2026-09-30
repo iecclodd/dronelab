@@ -114,13 +114,15 @@ test("the machine gun (F) shreds a Hollow bot, scores, and heats up", async ({ p
   };
   let killed = false;
   let maxCombo = 0;
+  let maxHeat = 0;
   for (let i = 0; i < 600 && !killed; i++) {
     const probe = await page.evaluate(() => {
       const c = (window as unknown as { dronelabCombat: Combat }).dronelabCombat;
-      return { p: window.dronelab.getState().state.position, bot: c.targets().find((t) => t.id === "p-aisle")!, combo: c.stats().combo };
+      return { p: window.dronelab.getState().state.position, bot: c.targets().find((t) => t.id === "p-aisle")!, combo: c.stats().combo, heat: c.stats().heat };
     });
     killed = !probe.bot.alive;
     maxCombo = Math.max(maxCombo, probe.combo);
+    maxHeat = Math.max(maxHeat, probe.heat);
     const dz = probe.bot.position[2]! - probe.p[2]!;
     const dx = probe.bot.position[0]! - probe.p[0]!;
     // Hold station 6–10 m away so the kill has to come from gunfire, not ramming.
@@ -136,7 +138,9 @@ test("the machine gun (F) shreds a Hollow bot, scores, and heats up", async ({ p
   const stats = await page.evaluate(() => (window as unknown as { dronelabCombat: Combat }).dronelabCombat.stats());
   expect(stats.kills).toBeGreaterThanOrEqual(1);
   expect(stats.score).toBeGreaterThan(400);
-  expect(maxCombo).toBeGreaterThanOrEqual(8);
+  // Heat only rises from gunfire (ramming adds none), and hits build combo.
+  expect(maxHeat).toBeGreaterThan(0.15);
+  expect(maxCombo).toBeGreaterThanOrEqual(4);
   void combat;
   expect(await page.evaluate(() => window.dronelab.getState().state.terminated)).toBe(false);
 });

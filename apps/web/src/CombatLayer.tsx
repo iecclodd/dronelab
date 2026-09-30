@@ -43,6 +43,9 @@ const RESPAWN: Record<Kind, number> = { bot: 8, barrel: 11 };
 const FIRE_RATE = 13;
 const HEAT_PER_SHOT = 0.042;
 const HEAT_COOL = 0.46;
+/** While overheated the barrel vents fast, and fire resumes at this heat. */
+const HEAT_VENT = 0.95;
+const HEAT_RESUME = 0.45;
 
 const three = ([x, y, z]: V3, out = new THREE.Vector3()) => out.set(x, z, -y);
 const enu = (v: THREE.Vector3): V3 => [v.x, -v.z, v.y];
@@ -466,7 +469,8 @@ export function CombatLayer({
     if (r.heat >= 1) { r.heat = 1; r.overheated = true; emit({ type: "overheat" }); }
   };
 
-  useEffect(() => { combatStats.reset(); }, [mapId]);
+  // Fresh stats per world, and never leave HUD state (e.g. overheat) behind.
+  useEffect(() => { combatStats.reset(); return () => combatStats.reset(); }, [mapId]);
   // Read-only inspection hook for browser tests and debugging.
   useEffect(() => {
     const hook = {
@@ -491,8 +495,8 @@ export function CombatLayer({
     if (s) r.lastSimTime = s.time;
 
     // Trigger + heat.
-    r.heat = Math.max(0, r.heat - HEAT_COOL * dt * (combatInput.trigger && !r.overheated ? 0.35 : 1));
-    if (r.overheated && r.heat < 0.3) r.overheated = false;
+    r.heat = Math.max(0, r.heat - (r.overheated ? HEAT_VENT : HEAT_COOL * (combatInput.trigger ? 0.35 : 1)) * dt);
+    if (r.overheated && r.heat < HEAT_RESUME) r.overheated = false;
     if (combatInput.trigger && !r.overheated) {
       r.fireClock += dt;
       while (r.fireClock >= 1 / FIRE_RATE && !r.overheated) { r.fireClock -= 1 / FIRE_RATE; shoot(); }

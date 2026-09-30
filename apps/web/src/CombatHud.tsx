@@ -53,7 +53,10 @@ export function CombatHud({ effectsEnabled, showCrosshair }: { effectsEnabled: b
       setCutIn({ id, count: event.count });
       later(() => setCutIn((c) => (c?.id === id ? undefined : c)), 1150);
     } else if (event.type === "overheat") {
-      setOverheat((n) => n + 1);
+      // A short callout; the crosshair ring carries the cooling state.
+      const id = nextId.current++;
+      setOverheat(id);
+      later(() => setOverheat((current) => (current === id ? 0 : current)), 1100);
     } else if (event.type === "dash" && effectsEnabled) {
       setDash((n) => n + 1);
     }
@@ -92,7 +95,7 @@ export function CombatHud({ effectsEnabled, showCrosshair }: { effectsEnabled: b
           {p.text}{p.sub && <small>{p.sub}</small>}
         </div>
       ))}
-      {overheat > 0 && stats.overheated && <div key={overheat} className="overheat-banner"><span>OVERHEAT</span><small>COOLING…</small></div>}
+      {overheat > 0 && <div key={overheat} className="overheat-banner"><span>OVERHEAT</span><small>VENTING</small></div>}
       {dash > 0 && <div key={dash} className="dash-burst"><svg viewBox="0 0 1000 700" preserveAspectRatio="none">{focusLines(28, dash)}</svg><b>シュッ</b></div>}
       {cutIn && effectsEnabled && (
         <div key={cutIn.id} className="cut-in">

@@ -212,7 +212,7 @@ export function GameOverlay(p: Props) {
     </div>}
 
     {p.camera === "FPV" && !free && <div className="fpv-reticle" aria-hidden="true" style={{ "--spread": `${Math.min(1, speed / topSpeed)}` } as React.CSSProperties}><i /><b /><i /></div>}
-    {free && active && <WaypointMarker name={destination?.name} color={destination?.color} enabled={p.camera !== "Orbit"} />}
+    {free && active && worldId === "pizzeria" && <WaypointMarker name={destination?.name} color={destination?.color} enabled={p.camera !== "Orbit"} />}
     {toast && <div key={toast.key} className="discovery-toast" role="status" style={{ "--toast": toast.color } as React.CSSProperties}>
       <span>DISCOVERED</span><b>{toast.name}</b><small>{toast.count} / {toast.total} spots</small>
     </div>}

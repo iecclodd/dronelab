@@ -6,6 +6,7 @@ import type { MutableRefObject } from "react";
 import type { PhysicalState } from "../../../packages/contracts";
 import { applyRimToToon } from "./cel-material";
 import { droneFx } from "./combat-store";
+import { presented } from "./presentation";
 
 const modelUrl = `${import.meta.env.BASE_URL}models/neon-quad.glb`;
 const basis = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
@@ -21,10 +22,12 @@ export interface BlenderDroneProps {
   state: MutableRefObject<PhysicalState | undefined>;
   ghost?: boolean;
   hidden?: boolean;
+  /** Use the shared smoothed pose (the live drone), rather than lerping raw states. */
+  smooth?: boolean;
 }
 
 /** GLB-backed display drone. The physics state remains owned by FlightScene. */
-export function BlenderDrone({ state, ghost = false, hidden = false }: BlenderDroneProps) {
+export function BlenderDrone({ state, ghost = false, hidden = false, smooth = false }: BlenderDroneProps) {
   const { scene } = useGLTF(modelUrl);
   const group = useRef<THREE.Group>(null);
   const point = useMemo(() => new THREE.Vector3(), []);
@@ -59,11 +62,16 @@ export function BlenderDrone({ state, ghost = false, hidden = false }: BlenderDr
   useFrame((_, dt) => {
     const current = state.current;
     if (!current || !group.current) return;
-    point.set(current.position[0], current.position[2], -current.position[1]);
-    group.current.position.lerp(point, Math.min(1, dt * 28));
-    rotation.set(...current.quaternion);
-    rotation.premultiply(basis).multiply(basisInverse);
-    group.current.quaternion.slerp(rotation, Math.min(1, dt * 28));
+    if (smooth && presented.valid) {
+      group.current.position.copy(presented.position);
+      group.current.quaternion.copy(presented.quaternion);
+    } else {
+      point.set(current.position[0], current.position[2], -current.position[1]);
+      group.current.position.lerp(point, Math.min(1, dt * 28));
+      rotation.set(...current.quaternion);
+      rotation.premultiply(basis).multiply(basisInverse);
+      group.current.quaternion.slerp(rotation, Math.min(1, dt * 28));
+    }
     // Squash on bounce, then a springy overshoot back to rest.
     const since = (performance.now() - droneFx.squashAt) / 1000;
     if (!ghost && since < 0.45) {

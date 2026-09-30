@@ -351,7 +351,8 @@ button:disabled { cursor:not-allowed; opacity:.45; }
 @keyframes sfx { 0% { transform:translate(-50%,-50%) rotate(var(--tilt)) scale(.2); opacity:0; } 18% { transform:translate(-50%,-50%) rotate(var(--tilt)) scale(1.15); opacity:1; } 30% { transform:translate(-50%,-50%) rotate(var(--tilt)) scale(1); } 80% { opacity:1; } 100% { transform:translate(-50%,-62%) rotate(var(--tilt)) scale(1.05); opacity:0; } }
 .pop-score { font:900 italic 26px Arial,sans-serif; color:#ffd23f; -webkit-text-stroke:3px #17141e; paint-order:stroke fill; animation:dmg .9s ease-out both; }
 
-.overheat-banner { position:absolute; left:50%; top:calc(50% + 58px); transform:translateX(-50%) skewX(-12deg); padding:5px 16px; display:flex; gap:10px; align-items:baseline; color:#17141e; background:repeating-linear-gradient(-45deg,#ffd23f 0 10px,#17141e 10px 20px); animation:heat-in .25s cubic-bezier(.2,1.6,.4,1) both; }
+.overheat-banner { position:absolute; left:50%; top:calc(50% + 58px); transform:translateX(-50%) skewX(-12deg); padding:5px 16px; display:flex; gap:10px; align-items:baseline; color:#17141e; background:repeating-linear-gradient(-45deg,#ffd23f 0 10px,#17141e 10px 20px); animation:heat-in .25s cubic-bezier(.2,1.6,.4,1) both, heat-out .3s ease-in .8s forwards; }
+@keyframes heat-out { to { opacity:0; transform:translateX(-50%) translateY(8px) skewX(-12deg); } }
 .overheat-banner span { font:900 italic 18px Arial,sans-serif; background:#ffd23f; padding:0 6px; }
 .overheat-banner small { font:700 9px "DM Mono",monospace; color:#ffd23f; background:#17141e; padding:1px 4px; letter-spacing:.14em; }
 @keyframes heat-in { from { transform:translateX(-50%) skewX(-12deg) scaleX(0); } }
