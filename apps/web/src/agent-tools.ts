@@ -1,8 +1,10 @@
 import { z } from "zod";
 import type { RunRecord } from "../../../packages/contracts";
 import type { SimulationClient } from "./simulation";
+import type { PolicySandbox } from "./policy-sandbox";
 type AppApi = {
   sim: SimulationClient;
+  policySandbox: PolicySandbox;
   getState: () => any;
   startFlight: (options?: any) => Promise<void>;
   stop: () => Promise<void>;
@@ -42,6 +44,17 @@ const api = () => {
 };
 const empty = z.object({}).strict();
 const schemas = {
+  reset_policy_session: z.object({
+    scenario: z.enum(["hover", "gates", "landing"]).optional(),
+    seed: z.number().int().min(0).max(0xffffffff).optional(),
+    maxSeconds: z.number().min(0.1).max(30).optional(),
+  }).strict(),
+  get_policy_observation: empty,
+  step_policy: z.object({
+    episodeId: z.string().min(1), expectedStep: z.number().int().nonnegative(),
+    action: z.object({ kind: z.literal("nav"), velocity: z.tuple([z.number().min(-3).max(3), z.number().min(-3).max(3), z.number().min(-3).max(3)]), yawRate: z.number().min(-1.5).max(1.5) }).strict(),
+  }).strict(),
+  finish_policy_session: z.object({ episodeId: z.string().min(1) }).strict(),
   list_scenarios: empty,
   get_capabilities: empty,
   create_session: empty,
@@ -126,6 +139,14 @@ export async function dispatch(name: string, input: unknown = {}) {
   const s = a.getState();
   const active = runningJob();
   switch (name) {
+    case "reset_policy_session":
+      return a.policySandbox.reset(args);
+    case "get_policy_observation":
+      return a.policySandbox.get();
+    case "step_policy":
+      return a.policySandbox.step(args.episodeId, args.expectedStep, args.action);
+    case "finish_policy_session":
+      return a.policySandbox.finish(args.episodeId);
     case "list_scenarios":
       return ["hover", "gates", "landing", "free"];
     case "get_capabilities":
@@ -133,6 +154,7 @@ export async function dispatch(name: string, input: unknown = {}) {
         authority: "browser-worker",
         physics: "Rapier",
         stateObservations: true,
+        externalPolicies: { clock: "lockstep", observation: "state-v1", action: "nav-v1", ticksPerStep: 4, hardwareAccess: false },
         rgb: !!s.rgbAvailable,
         training: "behavior cloning / CPU",
         remoteBackendRequired: false,
@@ -251,6 +273,7 @@ export function attachAgentTools() {
               "list_scenarios",
               "get_capabilities",
               "get_observation",
+              "get_policy_observation",
               "get_run_status",
               "get_training_status",
               "list_policies",

@@ -4,7 +4,8 @@ export const CANONICAL_TOOLS = [
   "list_scenarios", "get_capabilities", "get_observation", "reset_session",
   "set_mission", "pause_session", "stop_session", "start_experiment",
   "get_run_status", "cancel_run", "start_training", "get_training_status",
-  "list_policies", "capture_frame", "export_dataset",
+  "list_policies", "capture_frame", "export_dataset", "reset_policy_session",
+  "step_policy", "finish_policy_session", "get_policy_observation",
 ] as const;
 export type CanonicalTool = (typeof CANONICAL_TOOLS)[number];
 export type JsonObject = Record<string, unknown>;
@@ -25,6 +26,13 @@ export interface RelayConfig {
   maxResultBytes: number;
   maxSessions: number;
   providerCallsPerHour: number;
+  bridgeCallsPerHour?: number;
+  /** Optional local OpenAI-compatible inference server; loopback only. */
+  localModel?: { baseUrl: string; apiKey?: string; model: string };
+  /** Optional local state-v1 → nav-action bridge; loopback only. */
+  connectome?: { url: string; token?: string };
+  /** Optional local arbitrary policy-runtime bridge; loopback only. */
+  policy?: { url: string; token?: string };
 }
 
 export interface BrowserSession {
@@ -77,6 +85,19 @@ export function configFromEnv(env = process.env): RelayConfig {
     if (!Number.isSafeInteger(value) || value < 1 || value > maximum) throw new Error(`${name} must be an integer from 1 to ${maximum}`);
     return value;
   };
+  const localUrl = (name: string): string | undefined => {
+    const value = env[name]?.trim();
+    if (!value) return undefined;
+    let parsed: URL;
+    try { parsed = new URL(value); } catch { throw new Error(`${name} must be an absolute HTTP URL`); }
+    if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !["localhost", "127.0.0.1", "[::1]", "::1"].includes(parsed.hostname) || parsed.username || parsed.password || parsed.search || parsed.hash) throw new Error(`${name} must be a credential-free loopback HTTP URL`);
+    return parsed.toString().endsWith("/") ? parsed.toString() : `${parsed.toString()}/`;
+  };
+  const localModelUrl = localUrl("DRONELAB_LOCAL_MODEL_URL");
+  const localModel = localModelUrl ? { baseUrl: localModelUrl, apiKey: env.DRONELAB_LOCAL_MODEL_API_KEY || undefined, model: env.DRONELAB_LOCAL_MODEL || "" } : undefined;
+  if (localModel && !localModel.model) throw new Error("DRONELAB_LOCAL_MODEL is required when DRONELAB_LOCAL_MODEL_URL is set");
+  const connectomeUrl = localUrl("DRONELAB_CONNECTOME_URL");
+  const policyUrl = localUrl("DRONELAB_POLICY_URL");
   return {
     secret,
     allowedOrigins: new Set(origins),
@@ -87,6 +108,10 @@ export function configFromEnv(env = process.env): RelayConfig {
     maxResultBytes: readPositive("RELAY_MAX_RESULT_BYTES", 131_072, 1_048_576),
     maxSessions: readPositive("RELAY_MAX_SESSIONS", 100, 10_000),
     providerCallsPerHour: readPositive("DRONELAB_PROVIDER_CALLS_PER_HOUR", 60, 10_000),
+    bridgeCallsPerHour: readPositive("DRONELAB_BRIDGE_CALLS_PER_HOUR", 3_600, 10_000),
+    localModel,
+    connectome: connectomeUrl ? { url: connectomeUrl, token: env.DRONELAB_CONNECTOME_TOKEN || undefined } : undefined,
+    policy: policyUrl ? { url: policyUrl, token: env.DRONELAB_POLICY_TOKEN || undefined } : undefined,
   };
 }
 

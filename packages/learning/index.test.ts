@@ -31,7 +31,7 @@ const zeros = (shape: number[]) => ({
 const checkpoint: PolicyCheckpoint = {
   version: "bc-v1",
   id: "test",
-  createdAt: "",
+  createdAt: "2026-09-30T00:00:00.000Z",
   trainingSeed: 1,
   trainingSeeds: [1],
   validationSeeds: [20000],
@@ -64,6 +64,12 @@ const checkpoint: PolicyCheckpoint = {
   hash: "",
 };
 checkpoint.hash = checkpointHash(checkpoint);
+const rehash = (change: (copy: PolicyCheckpoint) => void): PolicyCheckpoint => {
+  const copy = structuredClone(checkpoint);
+  change(copy);
+  copy.hash = checkpointHash(copy);
+  return copy;
+};
 
 describe("learning runtime", () => {
   it("uses contract ordering, std floor, and clipped normalization", () =>
@@ -95,5 +101,33 @@ describe("learning runtime", () => {
         layers: [...checkpoint.layers.slice(0, 5), { shape: [4], data: [0] }],
       }),
     ).toThrow("weight shape");
+  });
+  it("rejects self-hashed checkpoints with malformed evaluation seeds and configs", () => {
+    expect(() => validateCheckpoint(rehash((copy) => { copy.testSeeds = undefined as never; }))).toThrow("test seeds");
+    expect(() => validateCheckpoint(rehash((copy) => { copy.validationSeeds = [1]; }))).toThrow("validation seeds");
+    expect(() => validateCheckpoint(rehash((copy) => { copy.trainingSeeds = [20000]; }))).toThrow("training seeds");
+    expect(() => validateCheckpoint(rehash((copy) => { copy.config.scenario = "landing"; }))).toThrow("scenario");
+    expect(() => validateCheckpoint(rehash((copy) => { copy.config.flightFeel = "arcade"; }))).toThrow("research dynamics");
+    expect(() => validateCheckpoint(rehash((copy) => { copy.evaluationConfigs = [{ ...copy.config, seed: 30002 }]; }))).toThrow("match test seeds");
+  });
+  it("accepts bounded held-out configs and dataset lineage", () => {
+    const enriched = rehash((copy) => {
+      copy.evaluationConfigs = [{ ...copy.config, seed: 30001, flightFeel: "research", wind: [0.2, 0, 0] }];
+      copy.datasetSources = [
+        { runId: "train-1", seed: 1, split: "train", source: "simulator" },
+        { runId: "val-1", seed: 20000, split: "validation", source: "external dataset" },
+      ];
+    });
+    expect(() => validateCheckpoint(enriched)).not.toThrow();
+    expect(() => validateCheckpoint(rehash((copy) => {
+      copy.datasetSources = [{ runId: "source", seed: 30001, split: "test", source: "leaked" }];
+    }))).toThrow("source lineage");
+  });
+  it("rejects malformed counts, normalization and extra metadata", () => {
+    expect(() => validateCheckpoint(rehash((copy) => { copy.samples = 1.5; }))).toThrow("training counts");
+    expect(() => validateCheckpoint(rehash((copy) => { copy.epochs = 0; }))).toThrow("training counts");
+    expect(() => validateCheckpoint(rehash((copy) => { copy.std[0] = -1; }))).toThrow("standard deviation");
+    expect(() => validateCheckpoint(rehash((copy) => { copy.parityMaxError = -1; }))).toThrow("numeric values");
+    expect(() => validateCheckpoint(rehash((copy) => { (copy as unknown as Record<string, unknown>).payload = "unexpected"; }))).toThrow("unsupported fields");
   });
 });

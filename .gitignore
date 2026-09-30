@@ -13,3 +13,7 @@ work/
 **/node_modules/
 **/dist/
 .vercel/
+
+# Local policy runtime artifacts
+__pycache__/
+*.py[cod]

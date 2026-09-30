@@ -4,6 +4,7 @@ import { z } from "zod";
 import { mcpHandler } from "./mcp.js";
 import { invokeProvider, type ProviderName } from "./providers.js";
 import { BrowserRelay, RelayError, configFromEnv, type RelayConfig } from "./relay.js";
+import { connectomeRequestSchema, requestConnectomeAction, requestPolicyAction } from "./connectome.js";
 
 const bearer = (value: string | undefined) => value?.match(/^Bearer\s+(.+)$/i)?.[1];
 const pairToken = (req: Request) => req.header("x-dronelab-pair-token") ?? undefined;
@@ -16,12 +17,15 @@ const asyncRoute = (handler: (req: Request, res: Response) => Promise<void> | vo
 const requireBrowser = (relay: BrowserRelay) => (req: Request, _res: Response, next: NextFunction) => { try { relay.assertSecret(bearer(req.header("authorization") ?? undefined)); relay.assertOrigin(req.header("origin") ?? undefined); next(); } catch (error) { next(error); } };
 const requireRelaySecret = (relay: BrowserRelay) => (req: Request, _res: Response, next: NextFunction) => { try { relay.assertSecret(bearer(req.header("authorization") ?? undefined)); next(); } catch (error) { next(error); } };
 const pathValue = (value: string | string[] | undefined) => { if (typeof value !== "string") throw new RelayError("invalid_path", "path parameter must be a single value", 400); return value; };
+export const BRIDGE_SESSION_CALL_LIMIT = 1_024;
 
 export interface RelayApp { app: express.Express; relay: BrowserRelay; server: http.Server; close: () => Promise<void>; }
 export function createRelayApp(config: RelayConfig = configFromEnv()): RelayApp {
   const relay = new BrowserRelay(config);
   const providerCalls = new Map<string, number>();
+  const bridgeCalls = new Map<string, number>();
   const operatorProviderCalls: number[] = [];
+  const operatorBridgeCalls: number[] = [];
   const consumeOperatorProviderBudget = () => {
     const now = Date.now();
     while (operatorProviderCalls.length > 0 && operatorProviderCalls[0] <= now - 3_600_000) operatorProviderCalls.shift();
@@ -34,9 +38,22 @@ export function createRelayApp(config: RelayConfig = configFromEnv()): RelayApp 
       if (separator < 1 || !relay.isActive(key.slice(0, separator))) providerCalls.delete(key);
     }
   };
-  const providerReaper = setInterval(reapProviderCalls, Math.max(1_000, Math.min(config.sessionTtlMs, 30_000)));
+  const consumeBridgeBudget = () => {
+    const now = Date.now();
+    while (operatorBridgeCalls.length > 0 && operatorBridgeCalls[0] <= now - 3_600_000) operatorBridgeCalls.shift();
+    if (operatorBridgeCalls.length >= (config.bridgeCallsPerHour ?? 600)) throw new RelayError("bridge_budget_exhausted", "operator rolling bridge-call budget is exhausted", 429);
+    operatorBridgeCalls.push(now);
+  };
+  const reapBridgeCalls = () => {
+    for (const key of bridgeCalls.keys()) {
+      const separator = key.lastIndexOf(":");
+      if (separator < 1 || !relay.isActive(key.slice(0, separator))) bridgeCalls.delete(key);
+    }
+  };
+  const providerReaper = setInterval(() => { reapProviderCalls(); reapBridgeCalls(); }, Math.max(1_000, Math.min(config.sessionTtlMs, 30_000)));
   providerReaper.unref();
   let activeProviderCalls = 0;
+  let activeBridgeCalls = 0;
   const app = express();
   app.disable("x-powered-by");
   app.use(express.json({ limit: "160kb", type: "application/json" }));
@@ -53,7 +70,7 @@ export function createRelayApp(config: RelayConfig = configFromEnv()): RelayApp 
   app.delete("/sessions/:id", requireBrowser(relay), (req, res) => { const id = pathValue(req.params.id); relay.assertBrowser(id, pairToken(req)); relay.close(id); res.status(204).end(); });
   app.post("/providers/:provider/plan", requireBrowser(relay), asyncRoute(async (req, res) => {
     const provider = req.params.provider;
-    if (provider !== "openai" && provider !== "anthropic" && provider !== "gemini") throw new RelayError("unknown_provider", "provider must be openai, anthropic, or gemini", 404);
+    if (provider !== "openai" && provider !== "anthropic" && provider !== "gemini" && provider !== "local") throw new RelayError("unknown_provider", "provider must be openai, anthropic, gemini, or local", 404);
     const input = planSchema.parse(req.body);
     const sessionId = req.header("x-dronelab-session-id") ?? undefined;
     const browserToken = pairToken(req);
@@ -69,11 +86,41 @@ export function createRelayApp(config: RelayConfig = configFromEnv()): RelayApp 
     const env = process.env;
     const upper = provider.toUpperCase();
     let output;
-    try { output = await invokeProvider(provider as ProviderName, { key: env[`${upper}_API_KEY`], model: env[`${upper}_MODEL`], timeoutMs: 20_000 }, input); }
+    try {
+      const local = config.localModel;
+      output = await invokeProvider(provider as ProviderName, provider === "local"
+        ? { key: local?.apiKey, model: local?.model, baseUrl: local?.baseUrl, timeoutMs: 20_000 }
+        : { key: env[`${upper}_API_KEY`], model: env[`${upper}_MODEL`], timeoutMs: 20_000 }, input);
+    }
     finally { activeProviderCalls -= 1; }
     // Raw provider payload is intentionally excluded: it can contain extra billing or trace data.
-    res.json({ provider, model: env[`${upper}_MODEL`], calls: output.calls });
+    res.json({ provider, model: provider === "local" ? config.localModel?.model : env[`${upper}_MODEL`], calls: output.calls });
   }));
+  const policyAction = (kind: "connectome" | "policy") => asyncRoute(async (req: Request, res: Response) => {
+    const sessionId = req.header("x-dronelab-session-id") ?? undefined;
+    const browserToken = pairToken(req);
+    if (!sessionId || !browserToken) throw new RelayError("missing_pairing", "bridge requests require X-DroneLab-Session-Id and X-DroneLab-Pair-Token", 401);
+    relay.assertBrowser(sessionId, browserToken);
+    const input = connectomeRequestSchema.parse(req.body);
+    const endpoint = kind === "connectome" ? config.connectome : config.policy;
+    if (!endpoint) throw new RelayError(`${kind}_unconfigured`, `${kind} bridge is not configured on this relay host`, 503);
+    reapBridgeCalls();
+    const budgetKey = `${sessionId}:${kind}`;
+    const calls = bridgeCalls.get(budgetKey) ?? 0;
+    // A 30 s policy sandbox horizon yields 900 decisions (120 Hz / four ticks).
+    // Keep a modest retry margin so a complete bounded episode cannot self-exhaust.
+    if (calls >= BRIDGE_SESSION_CALL_LIMIT) throw new RelayError("bridge_session_budget_exhausted", "per-session bridge-call budget is exhausted", 429);
+    if (activeBridgeCalls >= 2) throw new RelayError("bridge_busy", "bridge concurrency limit reached", 429);
+    consumeBridgeBudget();
+    bridgeCalls.set(budgetKey, calls + 1); activeBridgeCalls += 1;
+    let output;
+    try { output = kind === "connectome" ? await requestConnectomeAction(endpoint, input) : await requestPolicyAction(endpoint, input); }
+    finally { activeBridgeCalls -= 1; }
+    res.json(output);
+  });
+  // Both routes accept only a paired browser request. The actual inference service is loopback-only.
+  app.post("/connectome/action", requireBrowser(relay), policyAction("connectome"));
+  app.post("/policies/action", requireBrowser(relay), policyAction("policy"));
   app.all("/mcp", mcpHandler(relay));
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     const known = error instanceof RelayError ? error : error instanceof z.ZodError ? new RelayError("invalid_request", "request did not match the relay contract", 400) : new RelayError("internal_error", "relay request failed", 500);

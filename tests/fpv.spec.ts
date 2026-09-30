@@ -12,7 +12,7 @@ type FlightState = {
 };
 
 async function openFlight(page: Page) {
-  await page.goto("http://127.0.0.1:5182/");
+  await page.goto(`http://127.0.0.1:${process.env.DRONELAB_TEST_PREVIEW_PORT ?? 5182}/`);
   await page.waitForFunction(() =>
     Boolean(window.dronelab?.sim && window.dronelab.getState().state),
   );
