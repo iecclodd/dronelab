@@ -106,7 +106,7 @@ test("cycling camera while pointer locked releases it without pausing flight", a
   await takeFlight(page);
   await page.getByRole("button", { name: "Mouse look", exact: true }).click();
   await expect.poll(async () => (await state(page)).pointerLocked).toBe(true);
-  await page.keyboard.press("KeyC");
+  await page.keyboard.press("KeyV");
   await page.waitForFunction(() => window.dronelab.getState().camera === "Chase");
   await expect.poll(async () => (await state(page)).pointerLocked).toBe(false);
   expect((await state(page)).mode).toBe("realtime");

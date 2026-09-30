@@ -7,10 +7,12 @@ import RAPIER from "@dimforge/rapier3d-compat";
 import {
   ACTION_REPEAT,
   DEFAULT_CONFIG,
+  MAX_ACTION_IMPULSE,
   NAV_LIMIT,
   YAW_LIMIT,
   ZERO_ACTION,
   type Action,
+  type Obstacle,
   type Observation,
   type PhysicalState,
   type RewardComponents,
@@ -212,11 +214,21 @@ const MAX_THRUST = 5.8;
 const MOTOR_TAU = 0.045;
 const YAW_COEFF = 0.04;
 const ARENA_HALF_EXTENT = 25;
-const ARCADE_OUTDOOR_NAV_LIMIT = 30;
-const ARCADE_INDOOR_NAV_LIMIT = 16;
-const ARCADE_VELOCITY_LIMIT = 36;
+const ARCADE_OUTDOOR_NAV_LIMIT = 34;
+const ARCADE_INDOOR_NAV_LIMIT = 18;
+/** Sustained arcade speed cap; kicks (dash, blasts) may briefly exceed it. */
+const ARCADE_VELOCITY_LIMIT = 40;
+const ARCADE_BURST_LIMIT = 58;
+const ARCADE_BURST_TICKS = 42;
 const ARCADE_BOUNCE_MIN_SPEED_MS = 2.25;
-const ARCADE_BOUNCE_COOLDOWN_TICKS = 30;
+/** Collision *counting* cooldown; every energetic contact still bounces. */
+const ARCADE_BOUNCE_COOLDOWN_TICKS = 12;
+/** Arcade restitution: rebounds keep most of their energy, plus a small pop. */
+const ARCADE_RESTITUTION = 0.9;
+const ARCADE_BOUNCE_POP = 2.4;
+const ARCADE_BALL_RADIUS = 0.24;
+/** Arcade heading chases the camera, so it may turn much faster than research. */
+const ARCADE_YAW_LIMIT = 9;
 
 function rotate(q: Quat, v: V3): V3 {
   const [x, y, z, w] = q;
@@ -268,10 +280,43 @@ function qErrorVector(current: Quat, wanted: Quat): V3 {
   return [2 * sign * q[0], 2 * sign * q[1], 2 * sign * q[2]];
 }
 
+function copyImpulse(a: Action): Pick<Action, "impulse" | "pulse"> {
+  return a.impulse ? { impulse: [...a.impulse] as V3, pulse: a.pulse } : {};
+}
 function copyAction(a: Action): Action {
   return a.kind === "nav"
-    ? { kind: "nav", velocity: [...a.velocity] as V3, yawRate: a.yawRate }
-    : { kind: "rate", rates: [...a.rates] as V3, thrust: a.thrust };
+    ? { kind: "nav", velocity: [...a.velocity] as V3, yawRate: a.yawRate, ...copyImpulse(a) }
+    : { kind: "rate", rates: [...a.rates] as V3, thrust: a.thrust, ...copyImpulse(a) };
+}
+function qMul(a: Quat, b: Quat): Quat {
+  return [
+    a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+    a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+    a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+    a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+  ];
+}
+/** Axis-angle vector (radians) to quaternion. */
+function qFromRotationVector(v: V3): Quat {
+  const angle = length(v);
+  if (angle < 1e-9) return [0, 0, 0, 1];
+  const s = Math.sin(angle / 2) / angle;
+  return [v[0] * s, v[1] * s, v[2] * s, Math.cos(angle / 2)];
+}
+function qNormalize(q: Quat): Quat {
+  const n = Math.hypot(...q) || 1;
+  return [q[0] / n, q[1] / n, q[2] / n, q[3] / n];
+}
+/** Outward face normal of an axis-aligned box nearest to point p. */
+function boxFaceNormal(box: Obstacle, p: V3): V3 {
+  let best = 0, axis = 0;
+  for (let i = 0; i < 3; i++) {
+    const d = (p[i]! - box.position[i]!) / Math.max(box.size[i]! / 2, 1e-6);
+    if (Math.abs(d) > Math.abs(best)) { best = d; axis = i; }
+  }
+  const n: V3 = [0, 0, 0];
+  n[axis] = best < 0 ? -1 : 1;
+  return n;
 }
 function sameConfig(a: SimConfig, b: SimConfig): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
@@ -285,6 +330,7 @@ export class DroneEnvironment {
   private droneCollider!: RAPIER.Collider;
   private padCollider?: RAPIER.Collider;
   private contactTags = new Map<number, "ground" | "pad" | "obstacle">();
+  private obstacleByHandle = new Map<number, Obstacle>();
   private activeContacts = new Set<number>();
   private rng: Rng;
   private motor = [0, 0, 0, 0];
@@ -306,6 +352,14 @@ export class DroneEnvironment {
   private settledTicks = 0;
   private previousPosition: V3 = [0, 0, 0];
   private lastArcadeImpactTick = -Infinity;
+  // Arcade presentation state: heading tilt, damped tumble and one-shot kicks.
+  private lastPulse: number | undefined = undefined;
+  private burstTicks = 0;
+  private tilt: V3 = [0, 0, 0];
+  private tumble: V3 = [0, 0, 0];
+  private tumbleRate: V3 = [0, 0, 0];
+  private acroAttitude: Quat = [0, 0, 0, 1];
+  private lastImpact: PhysicalState["impact"] = undefined;
   private initialized = false;
 
   constructor(config: SimConfig) {
@@ -382,32 +436,39 @@ export class DroneEnvironment {
         body,
       );
       this.contactTags.set(collider.handle, "obstacle");
+      this.obstacleByHandle.set(collider.handle, obstacle);
     }
-    this.drone = this.world.createRigidBody(
-      RAPIER.RigidBodyDesc.dynamic()
-        .setTranslation(...this.scenario.spawn)
-        .setLinearDamping(this.arcadeFreeFlight() ? 0.18 : 0.42)
-        .setAngularDamping(this.arcadeFreeFlight() ? 0.62 : 1.1)
-        // CCD protects the fast arcade profile from passing through thin map
-        // geometry between fixed simulation steps.
-        .setCcdEnabled(this.arcadeFreeFlight())
-        .setAdditionalMassProperties(
-          MASS,
-          { x: 0, y: 0, z: 0 },
-          { x: 0.025, y: 0.025, z: 0.045 },
-          { x: 0, y: 0, z: 0, w: 1 },
-        ),
-    );
+    const arcade = this.arcadeFreeFlight();
+    const droneDesc = RAPIER.RigidBodyDesc.dynamic()
+      .setTranslation(...this.scenario.spawn)
+      .setLinearDamping(arcade ? 0 : 0.42)
+      .setAngularDamping(arcade ? 0 : 1.1)
+      // CCD protects the fast arcade profile from passing through thin map
+      // geometry between fixed simulation steps.
+      .setCcdEnabled(arcade)
+      .setAdditionalMassProperties(
+        MASS,
+        { x: 0, y: 0, z: 0 },
+        { x: 0.025, y: 0.025, z: 0.045 },
+        { x: 0, y: 0, z: 0, w: 1 },
+      );
+    // Arcade drives a rotation-locked ball: orientation is purely expressive
+    // (bank, tumble) and set each tick, so it can never snag the collider.
+    if (arcade) droneDesc.lockRotations();
+    this.drone = this.world.createRigidBody(droneDesc);
     this.droneCollider = this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(0.16, 0.16, 0.06)
+      (arcade
+        ? RAPIER.ColliderDesc.ball(ARCADE_BALL_RADIUS)
+        : RAPIER.ColliderDesc.cuboid(0.16, 0.16, 0.06))
         .setDensity(0)
-        .setRestitution(this.arcadeFreeFlight() ? 0.58 : 0.05)
-        .setFriction(0.45),
+        .setRestitution(arcade ? 0.2 : 0.05)
+        .setFriction(arcade ? 0.15 : 0.45),
       this.drone,
     );
   }
   private rebuildContactMetadata(): void {
     this.contactTags.clear();
+    this.obstacleByHandle.clear();
     this.padCollider = undefined;
     this.world.colliders.forEach((collider) => {
       const parent = collider.parent();
@@ -428,7 +489,13 @@ export class DroneEnvironment {
       ) {
         this.padCollider = collider;
         this.contactTags.set(collider.handle, "pad");
-      } else this.contactTags.set(collider.handle, "obstacle");
+      } else {
+        this.contactTags.set(collider.handle, "obstacle");
+        const match = this.scenario.obstacles.find((o) =>
+          Math.hypot(o.position[0] - p.x, o.position[1] - p.y, o.position[2] - p.z) < 0.001,
+        );
+        if (match) this.obstacleByHandle.set(collider.handle, match);
+      }
     });
   }
   reset(seed = this.config.seed): Observation {
@@ -455,6 +522,14 @@ export class DroneEnvironment {
         false;
     this.reason = "";
     this.lastArcadeImpactTick = -Infinity;
+    this.lastPulse = undefined;
+    this.burstTicks = 0;
+    this.tilt = [0, 0, 0];
+    this.tumble = [0, 0, 0];
+    this.tumbleRate = [0, 0, 0];
+    this.acroAttitude = [0, 0, 0, 1];
+    this.lastImpact = undefined;
+    this.obstacleByHandle.clear();
     this.initialized = false;
     this.ensure();
     this.previousPosition = this.rawState().position;
@@ -496,6 +571,7 @@ export class DroneEnvironment {
       terminated: this.terminated,
       truncated: this.truncated,
       reason: this.reason,
+      ...(this.lastImpact ? { impact: { ...this.lastImpact, normal: [...this.lastImpact.normal] as V3 } } : {}),
     };
   }
   state(): PhysicalState {
@@ -627,60 +703,120 @@ export class DroneEnvironment {
       peak > MAX_THRUST ? MAX_THRUST - peak : floor < 0 ? -floor : 0;
     return f.map((v) => clamp((v + offset) / MAX_THRUST, 0, 1));
   }
-  private tickOnce(requested: Action): RewardComponents {
-    const dt = this.config.dt;
-    const targetMotor = this.controller(requested);
-    this.motor = this.motor.map(
-      (m, i) =>
-        m +
-        (targetMotor[i]! - m) *
-          clamp(dt / (this.arcadeFreeFlight() ? 0.025 : MOTOR_TAU), 0, 1),
-    );
-    const s = this.rawState();
-    const q = s.quaternion as Quat;
-    const bodyZ = rotate(q, [0, 0, 1]);
-    // External forces persist in Rapier until explicitly cleared. Evaluate
-    // rotor lift, drag and wind anew every fixed tick.
+  /**
+   * Arcade drive: hovering, gravity-compensated velocity chase with a hard
+   * acceleration cap, plus one-shot kicks. No rotor model, deliberately.
+   */
+  private arcadeDrive(requested: Action, s: PhysicalState, dt: number): void {
     this.drone.resetForces(true);
     this.drone.resetTorques(true);
-    let yawTorque = 0;
-    ARMS.forEach((arm, i) => {
-      const force = this.motor[i]! * MAX_THRUST;
-      const point = add(s.position, rotate(q, arm));
-      const lift = mul(rotate(q, [0, 0, 1]), force);
-      this.drone.addForceAtPoint(
-        { x: lift[0], y: lift[1], z: lift[2] },
-        { x: point[0], y: point[1], z: point[2] },
+    if (requested.impulse && requested.pulse !== undefined && requested.pulse !== this.lastPulse) {
+      this.lastPulse = requested.pulse;
+      const kick = clampV(requested.impulse, MAX_ACTION_IMPULSE);
+      // Kicks are velocity changes (m/s); set directly so they never depend on
+      // Rapier's lazily computed mass properties.
+      const v = this.drone.linvel();
+      this.drone.setLinvel({ x: v.x + kick[0], y: v.y + kick[1], z: v.z + kick[2] }, true);
+      s = { ...s, velocity: [v.x + kick[0], v.y + kick[1], v.z + kick[2]] };
+      if (length(kick) > 4) this.burstTicks = ARCADE_BURST_TICKS;
+    }
+    let accel: V3;
+    if (requested.kind === "nav") {
+      const moving = length(requested.velocity) > 0.1;
+      accel = clampV(mul(sub(requested.velocity, s.velocity), moving ? 6.5 : 4.2), moving ? 60 : 38);
+      // While a kick is live, let momentum carry instead of braking it away.
+      if (this.burstTicks > 0) accel = mul(accel, 0.35);
+      this.drone.addForce({ x: accel[0] * MASS, y: accel[1] * MASS, z: (accel[2] + 9.81) * MASS }, true);
+    } else {
+      this.acroAttitude = qNormalize(qMul(this.acroAttitude, qFromRotationVector(mul(requested.rates, 5.5 * dt))));
+      const up = rotate(this.acroAttitude, [0, 0, 1]);
+      const thrust = requested.thrust * 4 * MAX_THRUST * 1.35;
+      accel = sub(mul(up, thrust / MASS), mul(s.velocity, 0.22));
+      this.drone.addForce({ x: accel[0] * MASS, y: accel[1] * MASS, z: accel[2] * MASS }, true);
+      accel = add(accel, [0, 0, -9.81]);
+    }
+    const effort = clamp(0.32 + length(accel) / 70, 0, 1);
+    this.motor = this.motor.map((m) => m + (effort - m) * clamp(dt / 0.05, 0, 1));
+    // Bank into horizontal acceleration like a racing kart, not a real quad.
+    const horizontal: V3 = [accel[0], accel[1], 0];
+    const wantedTilt = mul(unit(cross([0, 0, 1], horizontal)), Math.min(length(horizontal) / 60, 1) * 0.5);
+    this.tilt = add(this.tilt, mul(sub(length(horizontal) > 1e-6 ? wantedTilt : [0, 0, 0], this.tilt), clamp(dt * 10, 0, 1)));
+    // Tumble is a damped spring: big hits spin the drone, it rights itself.
+    this.tumbleRate = add(this.tumbleRate, mul(add(mul(this.tumble, -38), mul(this.tumbleRate, -7.5)), dt));
+    this.tumble = add(this.tumble, mul(this.tumbleRate, dt));
+  }
+  private arcadeOrientation(): Quat {
+    const base: Quat = this.prior.kind === "rate" || this.config.flightFeel !== "arcade"
+      ? this.acroAttitude
+      : [0, 0, Math.sin(this.yaw / 2), Math.cos(this.yaw / 2)];
+    return qNormalize(qMul(qFromRotationVector(this.tumble), qMul(qFromRotationVector(this.tilt), base)));
+  }
+  private tickOnce(requested: Action): RewardComponents {
+    const dt = this.config.dt;
+    const arcade = this.arcadeFreeFlight();
+    let s: PhysicalState;
+    let q: Quat;
+    let bodyZ: V3;
+    if (arcade) {
+      s = this.rawState();
+      q = s.quaternion as Quat;
+      bodyZ = rotate(q, [0, 0, 1]);
+      this.arcadeDrive(requested, s, dt);
+    } else {
+      const targetMotor = this.controller(requested);
+      this.motor = this.motor.map(
+        (m, i) => m + (targetMotor[i]! - m) * clamp(dt / MOTOR_TAU, 0, 1),
+      );
+      s = this.rawState();
+      q = s.quaternion as Quat;
+      bodyZ = rotate(q, [0, 0, 1]);
+      // External forces persist in Rapier until explicitly cleared. Evaluate
+      // rotor lift, drag and wind anew every fixed tick.
+      this.drone.resetForces(true);
+      this.drone.resetTorques(true);
+      let yawTorque = 0;
+      ARMS.forEach((arm, i) => {
+        const force = this.motor[i]! * MAX_THRUST;
+        const point = add(s.position, rotate(q, arm));
+        const lift = mul(rotate(q, [0, 0, 1]), force);
+        this.drone.addForceAtPoint(
+          { x: lift[0], y: lift[1], z: lift[2] },
+          { x: point[0], y: point[1], z: point[2] },
+          true,
+        );
+        yawTorque += SPIN[i]! * force * YAW_COEFF;
+      });
+      this.drone.addForce(
+        {
+          x: -s.velocity[0] * 0.16 + this.config.wind[0] * 0.1,
+          y: -s.velocity[1] * 0.16 + this.config.wind[1] * 0.1,
+          z: -s.velocity[2] * 0.1,
+        },
         true,
       );
-      yawTorque += SPIN[i]! * force * YAW_COEFF;
-    });
-    this.drone.addForce(
-      {
-        x: -s.velocity[0] * 0.16 + this.config.wind[0] * 0.1,
-        y: -s.velocity[1] * 0.16 + this.config.wind[1] * 0.1,
-        z: -s.velocity[2] * 0.1,
-      },
-      true,
-    );
-    const reactionTorque = rotate(q, [0, 0, yawTorque]);
-    this.drone.addTorque(
-      {
-        x: reactionTorque[0] - s.angularVelocity[0] * 0.015,
-        y: reactionTorque[1] - s.angularVelocity[1] * 0.015,
-        z: reactionTorque[2] - s.angularVelocity[2] * 0.018,
-      },
-      true,
-    );
+      const reactionTorque = rotate(q, [0, 0, yawTorque]);
+      this.drone.addTorque(
+        {
+          x: reactionTorque[0] - s.angularVelocity[0] * 0.015,
+          y: reactionTorque[1] - s.angularVelocity[1] * 0.015,
+          z: reactionTorque[2] - s.angularVelocity[2] * 0.018,
+        },
+        true,
+      );
+    }
     this.world.timestep = dt;
     this.world.step();
-    if (this.arcadeFreeFlight()) {
+    if (requested.kind === "nav") this.yaw += requested.yawRate * dt;
+    if (arcade) {
       const v = this.drone.linvel();
-      const limited = clampV([v.x, v.y, v.z], ARCADE_VELOCITY_LIMIT);
+      const limited = clampV([v.x, v.y, v.z], this.burstTicks > 0 ? ARCADE_BURST_LIMIT : ARCADE_VELOCITY_LIMIT);
       this.drone.setLinvel({ x: limited[0], y: limited[1], z: limited[2] }, true);
+      this.burstTicks = Math.max(0, this.burstTicks - 1);
+      this.prior = copyAction(requested);
+      const o = this.arcadeOrientation();
+      this.drone.setRotation({ x: o[0], y: o[1], z: o[2], w: o[3] }, true);
     }
     this.tick++;
-    if (requested.kind === "nav") this.yaw += requested.yawRate * dt;
     this.energy += this.motor.reduce((sum, m) => sum + m * m, 0) * dt;
     let next = this.rawState();
     const d = length(sub(next.target, next.position));
@@ -708,32 +844,36 @@ export class DroneEnvironment {
       this.tick - this.lastArcadeImpactTick >= ARCADE_BOUNCE_COOLDOWN_TICKS;
     const collisionContact =
       hitObstacle || (hitGround && this.config.scenario !== "landing");
-    const crash = this.arcadeFreeFlight()
+    const crash = arcade
       ? energeticArcadeImpact && arcadeImpactReady
       : collisionContact;
+    if (arcade && energeticArcadeImpact) {
+      // Reflect the pre-impact velocity about the contact normal: bouncy,
+      // readable and energetic, with a spin kick that the tumble spring rights.
+      let normal: V3 = [0, 0, 0];
+      for (const handle of entered) {
+        const tag = this.contactTags.get(handle);
+        const obstacle = this.obstacleByHandle.get(handle);
+        if (tag === "ground") normal = add(normal, [0, 0, 1]);
+        else if (obstacle) normal = add(normal, boxFaceNormal(obstacle, s.position));
+      }
+      normal = length(normal) > 1e-6 ? unit(normal) : [0, 0, 1];
+      const into = dot(s.velocity, normal);
+      if (into < 0) {
+        const reflected = sub(s.velocity, mul(normal, (1 + ARCADE_RESTITUTION) * into));
+        const rebound = clampV(add(reflected, mul(normal, ARCADE_BOUNCE_POP)), ARCADE_BURST_LIMIT);
+        this.drone.setLinvel({ x: rebound[0], y: rebound[1], z: rebound[2] }, true);
+        this.burstTicks = Math.max(this.burstTicks, 18);
+        this.tumbleRate = clampV(add(this.tumbleRate, mul(cross(normal, s.velocity), 0.55)), 16);
+        this.lastImpact = { step: this.tick, speed: impactSpeed, normal };
+        next = this.rawState();
+      }
+    }
     if (crash) {
       this.collisions++;
       collision = -1;
-      if (this.arcadeFreeFlight()) {
+      if (arcade) {
         this.lastArcadeImpactTick = this.tick;
-        // The wall kick is intentionally playful. Ground rebounds only retain
-        // a fraction of the incoming vertical speed, so a zero-thrust drone
-        // settles instead of receiving a perpetual minimum upward launch.
-        const rebound = hitGround && !hitObstacle
-          ? [s.velocity[0] * 0.7, s.velocity[1] * 0.7, Math.abs(s.velocity[2]) * 0.45] as V3
-          : clampV(
-              [
-                -s.velocity[0] * 0.38,
-                -s.velocity[1] * 0.38,
-                Math.max(1.5, Math.abs(s.velocity[2]) * 0.45, impactSpeed * 0.18),
-              ],
-              15,
-            );
-        this.drone.setLinvel(
-          { x: rebound[0], y: rebound[1], z: rebound[2] },
-          true,
-        );
-        next = this.rawState();
       } else {
         this.terminated = true;
         this.reason = "collision";
@@ -762,13 +902,34 @@ export class DroneEnvironment {
       : Math.abs(next.position[0]) > ARENA_HALF_EXTENT ||
         Math.abs(next.position[1]) > ARENA_HALF_EXTENT ||
         next.position[2] > ARENA_HALF_EXTENT;
-    if (outOfBounds && !this.wasOutOfBounds) {
+    if (outOfBounds && arcade && freeWorld) {
+      // Arcade map edges are a springy force field, not a run-ending wall.
+      const p = [...next.position] as V3;
+      const v = [...next.velocity] as V3;
+      const normal: V3 = [0, 0, 0];
+      for (const axis of [0, 1] as const) {
+        if (Math.abs(p[axis]) > freeWorld.bounds) {
+          normal[axis] = -Math.sign(p[axis]);
+          p[axis] = Math.sign(p[axis]) * (freeWorld.bounds - 0.05);
+          v[axis] = -v[axis] * ARCADE_RESTITUTION + normal[axis] * ARCADE_BOUNCE_POP;
+        }
+      }
+      if (p[2] > freeWorld.ceiling) {
+        normal[2] = -1;
+        p[2] = freeWorld.ceiling - 0.05;
+        v[2] = -Math.abs(v[2]) * ARCADE_RESTITUTION - ARCADE_BOUNCE_POP;
+      }
+      this.drone.setTranslation({ x: p[0], y: p[1], z: p[2] }, true);
+      this.drone.setLinvel({ x: v[0], y: v[1], z: v[2] }, true);
+      this.lastImpact = { step: this.tick, speed: length(next.velocity), normal: unit(normal) };
+      next = this.rawState();
+    } else if (outOfBounds && !this.wasOutOfBounds) {
       this.collisions++;
       collision = -1;
       this.terminated = true;
       this.reason = "out_of_bounds";
     }
-    this.wasOutOfBounds = outOfBounds;
+    this.wasOutOfBounds = outOfBounds && !arcade;
     let success = 0;
     const gate = this.config.scenario === "gates";
     const gentle = length(next.velocity) < (gate ? 1.4 : 1.1);
@@ -854,7 +1015,7 @@ export class DroneEnvironment {
     this.ensure();
     assertAction(action);
     const requested = copyAction(action);
-    const applied = boundedAction(action, this.navigationLimit());
+    const applied = boundedAction(action, this.navigationLimit(), this.arcadeFreeFlight() ? ARCADE_YAW_LIMIT : YAW_LIMIT);
     const start = this.tick;
     const observation = this.observe();
     const total: RewardComponents = {
@@ -975,6 +1136,15 @@ export class DroneEnvironment {
       lastDistance: this.lastDistance,
       settledTicks: this.settledTicks,
       lastArcadeImpactTick: this.lastArcadeImpactTick,
+      arcade: {
+        lastPulse: this.lastPulse,
+        burstTicks: this.burstTicks,
+        tilt: [...this.tilt],
+        tumble: [...this.tumble],
+        tumbleRate: [...this.tumbleRate],
+        acroAttitude: [...this.acroAttitude],
+        lastImpact: this.lastImpact,
+      },
     };
   }
   restore(snapshot: any): void {
@@ -1017,6 +1187,14 @@ export class DroneEnvironment {
     this.lastDistance = snapshot.lastDistance;
     this.settledTicks = snapshot.settledTicks;
     this.lastArcadeImpactTick = snapshot.lastArcadeImpactTick ?? -Infinity;
+    const a = snapshot.arcade ?? {};
+    this.lastPulse = a.lastPulse;
+    this.burstTicks = a.burstTicks ?? 0;
+    this.tilt = [...(a.tilt ?? [0, 0, 0])] as V3;
+    this.tumble = [...(a.tumble ?? [0, 0, 0])] as V3;
+    this.tumbleRate = [...(a.tumbleRate ?? [0, 0, 0])] as V3;
+    this.acroAttitude = [...(a.acroAttitude ?? [0, 0, 0, 1])] as Quat;
+    this.lastImpact = a.lastImpact;
   }
   stop(reason = "stopped"): void {
     this.stopped = true;
@@ -1048,18 +1226,25 @@ function assertAction(a: Action): void {
   if (!Number.isFinite(scalar))
     throw new Error("Action scalar must be finite.");
 }
-function boundedAction(a: Action, navigationLimit = NAV_LIMIT): Action {
+function boundedAction(a: Action, navigationLimit = NAV_LIMIT, yawLimit = YAW_LIMIT): Action {
   if (a.kind === "rate")
     return {
       kind: "rate",
       rates: a.rates.map((v) => clamp(v, -1, 1)) as V3,
       thrust: clamp(a.thrust, 0, 1),
+      ...boundedImpulse(a),
     };
   return {
     kind: "nav",
     velocity: a.velocity.map((v) => clamp(v, -navigationLimit, navigationLimit)) as V3,
-    yawRate: clamp(a.yawRate, -YAW_LIMIT, YAW_LIMIT),
+    yawRate: clamp(a.yawRate, -yawLimit, yawLimit),
+    ...boundedImpulse(a),
   };
+}
+function boundedImpulse(a: Action): Pick<Action, "impulse" | "pulse"> {
+  return a.impulse && a.pulse !== undefined
+    ? { impulse: clampV(a.impulse, MAX_ACTION_IMPULSE), pulse: a.pulse }
+    : {};
 }
 function copyObservation(o: Observation): Observation {
   return {

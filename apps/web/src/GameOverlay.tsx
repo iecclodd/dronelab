@@ -6,6 +6,7 @@ import { PIZZERIA_WORLD } from "../../../packages/contracts/pizzeria-world";
 import type { CameraMode } from "./Scene";
 import type { FlightLook } from "./flight-controls";
 import { navMarker, navStore } from "./nav-store";
+import { CombatHud, focusLines } from "./CombatHud";
 
 /** Screen-space pin for the chosen next spot; clamps to the edge with an arrow when off-screen. */
 function WaypointMarker({ name, color, enabled }: { name?: string; color?: string; enabled: boolean }) {
@@ -94,22 +95,14 @@ export function GameOverlay(p: Props) {
   const started = (p.flight?.step ?? 0) > 0;
   const [guide, setGuide] = useState(false);
   const [mapOpen, setMapOpen] = useState(false);
-  const [impact, setImpact] = useState(false);
-  const lastCollision = useRef(0);
-  const lastImpactAt = useRef(-Infinity);
-  const impactTimer = useRef<number | undefined>(undefined);
-  useEffect(() => () => window.clearTimeout(impactTimer.current), []);
+  // Focus lines "boil" (re-drawn) a few times a second, like inked frames.
+  const [boil, setBoil] = useState(0);
+  const speeding = !!p.effectsEnabled && p.mode === "realtime" && Math.hypot(...(p.flight?.velocity ?? [0, 0, 0])) * 3.6 > 55;
   useEffect(() => {
-    const collisions = p.flight?.collisions ?? 0;
-    const hit = collisions > lastCollision.current;
-    lastCollision.current = collisions;
-    if (!p.effectsEnabled) { setImpact(false); return; }
-    if (!hit || !p.effectsEnabled || performance.now() - lastImpactAt.current < 750) return;
-    lastImpactAt.current = performance.now();
-    setImpact(true);
-    window.clearTimeout(impactTimer.current);
-    impactTimer.current = window.setTimeout(() => setImpact(false), 280);
-  }, [p.flight?.collisions, p.effectsEnabled]);
+    if (!speeding) return;
+    const id = window.setInterval(() => setBoil((n) => n + 1), 90);
+    return () => window.clearInterval(id);
+  }, [speeding]);
   const [waypoint, setWaypoint] = useState(1);
   const [toast, setToast] = useState<{ key: number; name: string; color: string; count: number; total: number }>();
   const toastTimer = useRef<number | undefined>(undefined);
@@ -167,18 +160,11 @@ export function GameOverlay(p: Props) {
   const cruise = worldId === "pizzeria" && free ? 36 : 65;
   const segments = 24;
   const lit = Math.round(Math.min(1, speed / topSpeed) * segments);
-  return <div className={`game-overlay ${active ? "is-flying" : "is-idle"} ${impact && p.effectsEnabled ? "has-impact" : ""}`}>
-    {impact && p.effectsEnabled && <svg className="impact-frame" viewBox="0 0 1000 700" preserveAspectRatio="none" aria-hidden="true">
-      <path d="M0 0H1000L910 58 990 94 770 112 988 133 900 177 1000 203V700H0L81 635 12 602 201 586 0 546Z" fill="#201928"/>
-      <path d="M0 0L390 260 60 94 450 304 0 189ZM1000 0L635 279 940 84 564 326 1000 180ZM1000 700L627 438 928 615 574 385 1000 513ZM0 700L352 450 81 615 420 392 0 505Z" fill="#fff3b0"/>
+  return <div className={`game-overlay ${active ? "is-flying" : "is-idle"} ${free ? "is-arcade" : ""}`}>
+    {p.effectsEnabled && active && speed > 55 && <svg className="speed-lines" viewBox="0 0 1000 700" preserveAspectRatio="none" aria-hidden="true" style={{opacity: Math.min(.85, (speed - 55) / 70)}}>
+      {focusLines(46, boil, 0.62 - Math.min(0.14, (speed - 55) / 500))}
     </svg>}
-    {p.effectsEnabled && active && speed > 25 && <svg className="speed-lines" viewBox="0 0 1000 700" preserveAspectRatio="none" aria-hidden="true" style={{opacity: Math.min(.3, (speed - 25) / 260)}}>
-      {Array.from({ length: 22 }, (_, i) => {
-        const a = i * Math.PI * 2 / 22;
-        const r = 340 + (i % 4) * 35;
-        return <line key={i} x1={500 + Math.cos(a) * r} y1={350 + Math.sin(a) * r * .72} x2={500 + Math.cos(a) * (r + 140)} y2={350 + Math.sin(a) * (r + 140) * .72} />;
-      })}
-    </svg>}
+    {free && <CombatHud effectsEnabled={!!p.effectsEnabled} showCrosshair={p.camera !== "Orbit"} />}
     <div className="world-heading" key={`${worldId}-${free}`}>
       <div className="live-tag"><i /> {free ? "FREE FLIGHT" : "PRACTICE"} <span>/</span> {worldId === "pizzeria" && free ? "AFTER HOURS" : "GOLDEN HOUR"}</div>
       <h1>{free ? world.name : p.scenario?.name ?? "Loading flight deck"}<span>↗</span></h1>
@@ -202,21 +188,30 @@ export function GameOverlay(p: Props) {
     {guide && <div className="control-guide">
       <div><b>Your flight deck</b><button onClick={() => setGuide(false)} aria-label="Close controls">×</button></div>
       <p><kbd>Mouse</kbd> Look around. Click “Mouse look” to capture the cursor, or drag on the world. <kbd>Esc</kbd> releases and pauses.</p>
-      <dl>
+      {free && p.controller !== "rate" ? <dl>
+        <dt><kbd>Mouse</kbd></dt><dd>Aim. The drone turns to follow the camera</dd>
+        <dt><kbd>W A S D</kbd></dt><dd>Move where you're looking (look up + W climbs)</dd>
+        <dt><kbd>Space / C</kbd></dt><dd>Rise / sink</dd>
+        <dt><kbd>Shift</kbd></dt><dd>Dash (tap) · boost (hold)</dd>
+        <dt><kbd>F</kbd> / <kbd>Click</kbd></dt><dd>Machine gun (watch the heat ring)</dd>
+        <dt><kbd>Q / E</kbd></dt><dd>Turn the camera</dd>
+        <dt><kbd>V</kbd> <kbd>R</kbd> <kbd>P</kbd></dt><dd>Camera · retry · pause</dd>
+      </dl> : <dl>
         <dt><kbd>W S / ↑ ↓</kbd></dt><dd>{p.controller === "rate" ? "Pitch forward / back" : "Forward / backward"}</dd>
         <dt><kbd>A D / ← →</kbd></dt><dd>{p.controller === "rate" ? "Roll left / right" : "Strafe left / right"}</dd>
         <dt><kbd>Space / Shift</kbd></dt><dd>{p.controller === "rate" ? "Increase / decrease throttle" : "Climb / descend"}</dd>
         <dt><kbd>Q / E</kbd></dt><dd>Yaw left / right</dd>
         <dt><kbd>F</kbd></dt><dd>Boost in Assisted</dd>
         <dt><kbd>R</kbd> <kbd>C</kbd> <kbd>P</kbd></dt><dd>Retry · camera · pause</dd>
-      </dl>
-      <p>{p.controller === "rate" ? "Acro: full body rates, manual throttle and a body-mounted camera. Small inputs go a long way." : "Assisted: punchy acceleration, braking on release and a steady horizon in free flight. Hold F to boost."}</p>
+        {free && <><dt><kbd>F</kbd></dt><dd>Machine gun</dd></>}
+      </dl>}
+      <p>{p.controller === "rate" ? "Acro: full body rates, manual throttle and a body-mounted camera. Small inputs go a long way." : free ? "Arcade: everything bounces. Walls and the map edge fling you back, explosions knock you around, and ramming a bot detonates it. Chain barrels for big combos." : "Assisted: braking on release and a steady horizon. Hold F to boost."}</p>
       <p>Gamepad: left stick = yaw / throttle, right stick = roll / pitch. Plug in and move a stick to connect. Optional center calibration is in Flight setup.</p>
-      <p>Each recorded flight lasts up to two minutes; retry for a fresh session. {free ? `Map limits: ±${world.bounds} m, ${world.ceiling} m ceiling. Arcade collisions bounce; skim low and find a fast line.` : "Practice missions use research physics."}</p>
+      <p>Each recorded flight lasts up to two minutes; retry for a fresh session. {free ? `Map: ±${world.bounds} m, ${world.ceiling} m ceiling, springy edges.` : "Practice missions use research physics."}</p>
       <p className="guide-diagnostics">{p.fps} FPS · {p.camera} camera · {p.soundEnabled ? "Sound enabled" : "Sound muted"}</p>
     </div>}
 
-    {p.camera === "FPV" && <div className="fpv-reticle" aria-hidden="true" style={{ "--spread": `${Math.min(1, speed / topSpeed)}` } as React.CSSProperties}><i /><b /><i /></div>}
+    {p.camera === "FPV" && !free && <div className="fpv-reticle" aria-hidden="true" style={{ "--spread": `${Math.min(1, speed / topSpeed)}` } as React.CSSProperties}><i /><b /><i /></div>}
     {free && active && <WaypointMarker name={destination?.name} color={destination?.color} enabled={p.camera !== "Orbit"} />}
     {toast && <div key={toast.key} className="discovery-toast" role="status" style={{ "--toast": toast.color } as React.CSSProperties}>
       <span>DISCOVERED</span><b>{toast.name}</b><small>{toast.count} / {toast.total} spots</small>
@@ -240,10 +235,10 @@ export function GameOverlay(p: Props) {
       </div>
       <div className="flight-actions">
         <button className="take-flight" disabled={p.busy} onClick={active ? p.onPause : ended || !started ? p.onLaunch : p.onPause}>{active ? <Pause size={17}/> : <Play size={17}/>} {p.busy ? "Preparing…" : active ? "Pause" : ended ? "Fly again" : started ? "Resume" : "Take flight"} {!active && <ArrowUpRight size={17}/>}</button>
-        <button className={`look-button ${p.locked || p.dragging ? "selected" : ""}`} disabled={p.camera !== "FPV" || p.busy} onClick={p.onLook} title={p.camera === "FPV" ? "Capture the mouse to look around" : "Select FPV for mouse look"}><Crosshair size={16}/>{p.locked ? "Mouse captured" : p.dragging ? "Looking" : "Mouse look"}</button>
+        <button className={`look-button ${p.locked || p.dragging ? "selected" : ""}`} disabled={(p.camera !== "FPV" && !(free && p.camera === "Chase")) || p.busy} onClick={p.onLook} title={p.camera === "Orbit" ? "Select FPV or Chase for mouse look" : "Capture the mouse to aim"}><Crosshair size={16}/>{p.locked ? "Mouse captured" : p.dragging ? "Looking" : "Mouse look"}</button>
         <button className="retry-button" disabled={p.busy} onClick={p.onRestart} aria-label="Restart flight" title="Restart flight (R)"><RotateCcw size={16}/></button>
       </div>
-      <div className="dock-hint"><kbd>WASD</kbd> {p.controller === "rate" ? "PITCH / ROLL" : "MOVE"} {p.controller === "rate" ? <><kbd>SPACE / SHIFT</kbd> THROTTLE</> : <><kbd>F</kbd> BOOST</>} <kbd>R</kbd> RETRY</div>
+      <div className="dock-hint"><kbd>WASD</kbd> {p.controller === "rate" ? "PITCH / ROLL" : "MOVE"} {p.controller === "rate" ? <><kbd>SPACE / SHIFT</kbd> THROTTLE</> : free ? <><kbd>SHIFT</kbd> DASH <kbd>F</kbd> FIRE</> : <><kbd>F</kbd> BOOST</>} <kbd>R</kbd> RETRY</div>
     </div>
 
     {free && <div className={`explore-map ${mapOpen ? "map-open" : "map-closed"}`}>

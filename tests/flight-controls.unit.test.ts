@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   acroAction,
+  arcadeKeyboardAxes,
+  cameraRelativeAction,
   assistedAction,
   assistedSpeeds,
   deadzone,
@@ -44,8 +46,8 @@ describe("flight control helpers", () => {
 
   it("uses fast map-aware arcade setpoints while omitted profiles retain research speeds", () => {
     expect(assistedSpeeds()).toEqual({ cruise: 7, boost: 13 });
-    expect(assistedSpeeds("arcade", "valley")).toEqual({ cruise: 18, boost: 30 });
-    expect(assistedSpeeds("arcade", "pizzeria")).toEqual({ cruise: 10, boost: 16 });
+    expect(assistedSpeeds("arcade", "valley")).toEqual({ cruise: 20, boost: 32 });
+    expect(assistedSpeeds("arcade", "pizzeria")).toEqual({ cruise: 11, boost: 17 });
     expect(
       assistedAction([0, 0, 0, 1], 0, {
         forward: 1,
@@ -56,7 +58,7 @@ describe("flight control helpers", () => {
         flightFeel: "arcade",
         mapId: "valley",
       }),
-    ).toMatchObject({ kind: "nav", velocity: [30, 0, 0] });
+    ).toMatchObject({ kind: "nav", velocity: [32, 0, 0] });
   });
 
   it("levels arcade Assisted steering while retaining ENU heading and mouse look", () => {
@@ -93,7 +95,7 @@ describe("flight control helpers", () => {
     );
     expect(action).toMatchObject({
       kind: "nav",
-      velocity: [expectedForward[0] * 18, expectedForward[1] * 18, 0],
+      velocity: [expectedForward[0] * 20, expectedForward[1] * 20, 0],
     });
   });
 
@@ -114,7 +116,7 @@ describe("flight control helpers", () => {
       yaw: -0.7,
       flightFeel: "arcade",
     });
-    expect(verticalArcade).toMatchObject({ kind: "nav", velocity: [0, 0, -9] });
+    expect(verticalArcade).toMatchObject({ kind: "nav", velocity: [0, 0, -10] });
     expect(verticalArcade.kind === "nav" && verticalArcade.yawRate).toBeCloseTo(-1.05);
   });
 
@@ -157,5 +159,26 @@ describe("flight control helpers", () => {
     expect(keyboardFlightAxes(new Set(["KeyW", "KeyS", "KeyA", "KeyD", "KeyQ", "KeyE"]))).toMatchObject({
       forward: 0, right: 0, yaw: 0,
     });
+  });
+
+  it("moves along the camera's full aim in arcade and turns the airframe toward it", () => {
+    const level: [number, number, number, number] = [0, 0, 0, 1];
+    const ahead = cameraRelativeAction(level, { yaw: 0, pitch: 0 }, { forward: 1, right: 0, up: 0 });
+    expect(ahead.velocity[0]).toBeCloseTo(20);
+    expect(ahead.yawRate).toBe(0);
+    const climbing = cameraRelativeAction(level, { yaw: 0, pitch: Math.PI / 4 }, { forward: 1, right: 0, up: 0 });
+    expect(climbing.velocity[2]).toBeGreaterThan(10);
+    const turned = cameraRelativeAction(level, { yaw: 0.5, pitch: 0 }, { forward: 1, right: 0, up: 0 });
+    expect(turned.velocity[1]).toBeGreaterThan(5);
+    expect(turned.yawRate).toBeGreaterThan(0);
+    const diagonal = cameraRelativeAction(level, { yaw: 0, pitch: 0 }, { forward: 1, right: 1, up: 1, boost: true });
+    expect(Math.hypot(...diagonal.velocity)).toBeCloseTo(32);
+  });
+
+  it("maps arcade bindings: C sinks, Shift boosts, F fires, Q/E turn", () => {
+    expect(arcadeKeyboardAxes(new Set(["KeyW", "Space", "ShiftLeft", "KeyF", "KeyQ"]))).toEqual({
+      forward: 1, right: 0, up: 1, turn: 1, boost: true, fire: true,
+    });
+    expect(arcadeKeyboardAxes(new Set(["KeyC", "KeyE", "KeyA"]))).toMatchObject({ up: -1, turn: -1, right: -1, boost: false, fire: false });
   });
 });

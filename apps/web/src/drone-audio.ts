@@ -289,6 +289,62 @@ export class DroneAudio {
     oscillator.stop(now + 0.14);
   }
 
+  /**
+   * One-shot combat sounds, synthesized like the motor voices. They share the
+   * impact bus, so mute, pause, blur and gesture gating all still apply.
+   */
+  sfx(kind: "shot" | "hit" | "dash" | "boom" | "bounce", strength = 1): void {
+    const context = this.context;
+    if (!context || !this.impactGain || !this.started || this.muted || !this.enabled) return;
+    const now = context.currentTime;
+    const out = context.createGain();
+    out.connect(this.impactGain);
+    const noise = (seconds: number) => {
+      const source = context.createBufferSource();
+      source.buffer = this.noiseBuffer(context, seconds);
+      return source;
+    };
+    const envelope = (param: AudioParam, peak: number, attack: number, decay: number) => {
+      param.setValueAtTime(0.0001, now);
+      param.exponentialRampToValueAtTime(Math.max(peak, 0.0002), now + attack);
+      param.exponentialRampToValueAtTime(0.0001, now + attack + decay);
+    };
+    if (kind === "shot") {
+      const crack = noise(0.06), band = context.createBiquadFilter(), thump = context.createOscillator(), thumpGain = context.createGain();
+      band.type = "bandpass"; band.frequency.value = 2100 + Math.random() * 500; band.Q.value = 0.9;
+      thump.type = "triangle"; thump.frequency.setValueAtTime(150, now); thump.frequency.exponentialRampToValueAtTime(60, now + 0.05);
+      envelope(out.gain, 0.05, 0.002, 0.05);
+      envelope(thumpGain.gain, 0.6, 0.002, 0.05);
+      crack.connect(band).connect(out); thump.connect(thumpGain).connect(out);
+      crack.start(now); thump.start(now); thump.stop(now + 0.07);
+    } else if (kind === "hit") {
+      const tick = context.createOscillator();
+      tick.type = "square"; tick.frequency.setValueAtTime(2600, now); tick.frequency.exponentialRampToValueAtTime(1500, now + 0.03);
+      envelope(out.gain, 0.018, 0.001, 0.035);
+      tick.connect(out); tick.start(now); tick.stop(now + 0.05);
+    } else if (kind === "dash") {
+      const whoosh = noise(0.3), band = context.createBiquadFilter();
+      band.type = "bandpass"; band.Q.value = 1.4;
+      band.frequency.setValueAtTime(400, now); band.frequency.exponentialRampToValueAtTime(2600, now + 0.22);
+      envelope(out.gain, 0.08, 0.02, 0.24);
+      whoosh.connect(band).connect(out); whoosh.start(now);
+    } else if (kind === "bounce") {
+      const boing = context.createOscillator();
+      boing.type = "sine"; boing.frequency.setValueAtTime(180, now); boing.frequency.exponentialRampToValueAtTime(420, now + 0.08); boing.frequency.exponentialRampToValueAtTime(140, now + 0.22);
+      envelope(out.gain, clamp(0.04 + strength * 0.004, 0.04, 0.12), 0.004, 0.22);
+      boing.connect(out); boing.start(now); boing.stop(now + 0.26);
+    } else {
+      const rumble = noise(0.9), low = context.createBiquadFilter(), sub = context.createOscillator(), subGain = context.createGain();
+      low.type = "lowpass"; low.frequency.setValueAtTime(1600, now); low.frequency.exponentialRampToValueAtTime(90, now + 0.8);
+      sub.type = "sine"; sub.frequency.setValueAtTime(70, now); sub.frequency.exponentialRampToValueAtTime(28, now + 0.6);
+      envelope(out.gain, clamp(0.16 * strength, 0.05, 0.3), 0.004, 0.85);
+      envelope(subGain.gain, 1.4, 0.004, 0.6);
+      rumble.connect(low).connect(out); sub.connect(subGain).connect(out);
+      rumble.start(now); sub.start(now); sub.stop(now + 0.7);
+    }
+    window.setTimeout(() => out.disconnect(), 1200);
+  }
+
   private applyMasterGain(): void {
     if (!this.context || !this.master) return;
     const live = this.started && this.enabled && !this.muted;

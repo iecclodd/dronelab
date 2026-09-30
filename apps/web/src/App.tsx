@@ -13,6 +13,7 @@ import { qualitySnapshot, visualQuality, type QualityPreference } from "./toon-p
 import { GameOverlay } from "./GameOverlay";
 import { useFlightControls } from "./flight-controls";
 import { createDroneAudio, type DroneAudio } from "./drone-audio";
+import { combatSfx } from "./combat-store";
 import { ConnectionPanel } from "./ConnectionPanel";
 import { SimulationClient } from "./simulation";
 import { TrainingClient, type TrainingProgress } from "./learning";
@@ -151,6 +152,7 @@ export default function App() {
   useEffect(() => {
     const audio = createDroneAudio({ stateRef, modeRef });
     audioRef.current = audio;
+    combatSfx.play = (kind, strength) => audio.sfx(kind, strength);
     return () => { void audio.dispose(); audioRef.current = undefined; };
   }, []);
   const policy = policies.find((p) => p.id === policyId);

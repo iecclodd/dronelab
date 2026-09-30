@@ -9,6 +9,8 @@ import { BlenderDrone } from "./BlenderDrone";
 import { levelFlightQuaternion, type FlightLook } from "./flight-controls";
 import { LOOKS, ToonPipeline } from "./toon-pipeline";
 import { LandmarkBeacons } from "./WorldFx";
+import { CombatLayer } from "./CombatLayer";
+import { cameraShake } from "./combat-store";
 import { FREE_WORLD } from "../../../packages/contracts/free-world";
 import { PIZZERIA_WORLD } from "../../../packages/contracts/pizzeria-world";
 export type CameraMode = "Chase" | "FPV" | "Orbit";
@@ -445,7 +447,23 @@ function Rig({
       step.current = s.step;
       if (cameraMode !== "Orbit") {
         look.set(...visual(s.position));
-        if (cameraMode === "Chase") {
+        if (cameraMode === "Chase" && stabilizeView) {
+          // Arcade third-person action camera: orbits with the aim, so the
+          // camera-relative controls always match the view.
+          const flightLook = lookRef.current;
+          body.set(...levelFlightQuaternion(s.quaternion)).premultiply(basis).multiply(basisInverse);
+          yaw.setFromAxisAngle(yawAxis, flightLook.yaw);
+          pitch.setFromAxisAngle(pitchAxis, flightLook.pitch);
+          body.multiply(yaw).multiply(pitch);
+          forward.set(1, 0, 0).applyQuaternion(body);
+          goal.copy(look).addScaledVector(forward, -6.2);
+          goal.y += 1.5;
+          camera.position.lerp(goal, 1 - Math.exp(-dt * 14));
+          camera.up.set(0, 1, 0);
+          // Aim at a far point on the look ray so screen centre is the true
+          // line of fire and the drone sits just below it.
+          camera.lookAt(look.addScaledVector(forward, 60).setY(look.y + 1.35));
+        } else if (cameraMode === "Chase") {
           goal.copy(look); goal.x += 5; goal.y += 3.2; goal.z += 6.8;
           camera.position.lerp(goal, 1 - Math.exp(-dt * 4));
           look.y += .3;
@@ -459,7 +477,7 @@ function Rig({
           const kick = effectsEnabled && hitAge >= 0 && hitAge < .35 ? Math.sin(hitAge * 45) * Math.exp(-hitAge * 14) * .045 : 0;
           pitch.setFromAxisAngle(
             pitchAxis,
-            flightLook.pitch + THREE.MathUtils.degToRad(cameraTilt) + kick,
+            flightLook.pitch + (stabilizeView ? 0 : THREE.MathUtils.degToRad(cameraTilt)) + kick,
           );
           body.multiply(yaw).multiply(pitch);
           camera.position.copy(goal);
@@ -471,6 +489,15 @@ function Rig({
       }
     }
     if (cameraMode !== "FPV") camera.up.set(0, 1, 0);
+    // Trauma shake (shake = trauma²), from blasts, bounces and recoil.
+    if (effectsEnabled && cameraShake.trauma > 0 && cameraMode !== "Orbit") {
+      const amount = cameraShake.trauma ** 2;
+      const t = performance.now() / 1000;
+      camera.position.x += Math.sin(t * 61) * amount * 0.32;
+      camera.position.y += Math.sin(t * 47 + 1.3) * amount * 0.26;
+      camera.rotateZ(Math.sin(t * 37 + 2.1) * amount * 0.05);
+    }
+    cameraShake.trauma = effectsEnabled ? Math.max(0, cameraShake.trauma - dt * 1.6) : 0;
     tracker.current.frames++;
     const now = performance.now();
     if (now - tracker.current.start > 1000) {
@@ -540,6 +567,16 @@ export function FlightScene({
         {ghost && <BlenderDrone state={ghost} ghost />}
       </Suspense>
       <VelocityTrails state={state} enabled={effectsEnabled && cameraMode === "FPV"} />
+      {scenario?.id === "free" && (
+        <CombatLayer
+          key={`combat-${scenario.mapId ?? "valley"}`}
+          world={scenario.mapId === "pizzeria" ? PIZZERIA_WORLD : FREE_WORLD}
+          mapId={scenario.mapId === "pizzeria" ? "pizzeria" : "valley"}
+          state={state}
+          firstPerson={cameraMode === "FPV"}
+          effectsEnabled={effectsEnabled}
+        />
+      )}
       {path.length > 1 && cameraMode !== "FPV" && (
         <Line
           points={path.map(visual)}

@@ -334,7 +334,7 @@ describe("DroneEnvironment", () => {
     expect(arcadeResult.transition.appliedAction).toMatchObject({ velocity: [18, 0, 2] });
     expect(arcade.state().velocity[0]).toBeGreaterThan(research.state().velocity[0] * 2.5);
     for (let i = 0; i < 240; i++) arcadeResult = arcade.step(command, 1);
-    expect(arcade.state().velocity[0]).toBeGreaterThan(18);
+    expect(arcade.state().velocity[0]).toBeGreaterThan(17.9);
     const beforeBrake = arcade.state().velocity[0];
     for (let i = 0; i < 120; i++)
       arcadeResult = arcade.step(
@@ -343,7 +343,7 @@ describe("DroneEnvironment", () => {
       );
     expect(Math.abs(arcade.state().velocity[0])).toBeLessThan(beforeBrake * 0.5);
     expect(arcade.state().velocity.every(Number.isFinite)).toBe(true);
-    expect(Math.hypot(...arcade.state().velocity)).toBeLessThanOrEqual(36.0001);
+    expect(Math.hypot(...arcade.state().velocity)).toBeLessThanOrEqual(40.0001);
     research.dispose();
     arcade.dispose();
   });
@@ -367,9 +367,39 @@ describe("DroneEnvironment", () => {
     expect(hit.state.collisions).toBe(1);
     expect(hit.state.terminated).toBe(false);
     expect(hit.state.reason).toBe("");
-    expect(hit.state.velocity[0]).toBeLessThan(-0.5);
+    expect(hit.state.velocity[0]).toBeLessThan(-10);
+    expect(hit.state.impact?.normal[0]).toBe(-1);
     expect(hit.state.velocity.every(Number.isFinite)).toBe(true);
-    expect(Math.hypot(...hit.state.velocity)).toBeLessThanOrEqual(36.0001);
+    expect(Math.hypot(...hit.state.velocity)).toBeLessThanOrEqual(58.0001);
+    env.dispose();
+  });
+
+  it("applies an arcade impulse exactly once per pulse and ignores it in research", () => {
+    const arcade = new DroneEnvironment(config({ scenario: "free", flightFeel: "arcade", maxSeconds: 10 }));
+    const kick = { kind: "nav" as const, velocity: [0, 0, 0] as [number, number, number], yawRate: 0, impulse: [0, 20, 0] as [number, number, number], pulse: 1 };
+    arcade.step(kick, 1);
+    const afterFirst = arcade.state().velocity[1];
+    expect(afterFirst).toBeGreaterThan(15);
+    for (let i = 0; i < 30; i++) arcade.step(kick, 1);
+    expect(arcade.state().velocity[1]).toBeLessThan(afterFirst);
+    arcade.step({ ...kick, pulse: 2 }, 1);
+    expect(arcade.state().velocity[1]).toBeGreaterThan(afterFirst);
+    const research = new DroneEnvironment(config({ scenario: "free", maxSeconds: 10 }));
+    research.step(kick, 1);
+    expect(Math.abs(research.state().velocity[1])).toBeLessThan(1);
+    arcade.dispose();
+    research.dispose();
+  });
+
+  it("bounces arcade flight off the map edge instead of ending the run", () => {
+    const env = new DroneEnvironment(config({ scenario: "free", flightFeel: "arcade", maxSeconds: 10 }));
+    const drone = (env as any).drone;
+    drone.setTranslation({ x: FREE_WORLD.bounds - 0.2, y: 0, z: 20 }, true);
+    drone.setLinvel({ x: 30, y: 0, z: 0 }, true);
+    const result = env.step({ kind: "nav", velocity: [30, 0, 0], yawRate: 0 }, 6);
+    expect(result.state.terminated).toBe(false);
+    expect(result.state.position[0]).toBeLessThanOrEqual(FREE_WORLD.bounds);
+    expect(result.state.velocity[0]).toBeLessThan(0);
     env.dispose();
   });
 
@@ -378,7 +408,7 @@ describe("DroneEnvironment", () => {
       config({ scenario: "free", flightFeel: "arcade", maxSeconds: 10 }),
     );
     const drone = (env as any).drone;
-    drone.setTranslation({ x: 0, y: 0, z: 0.061 }, true);
+    drone.setTranslation({ x: 0, y: 0, z: 0.25 }, true);
     drone.setLinvel({ x: 0, y: 0, z: 0 }, true);
     let maxAltitude = env.state().position[2];
     let result = env.step({ kind: "rate", rates: [0, 0, 0], thrust: 0 }, 1);
@@ -388,7 +418,7 @@ describe("DroneEnvironment", () => {
     }
     expect(result.state.terminated).toBe(false);
     expect(result.state.collisions).toBe(0);
-    expect(maxAltitude).toBeLessThan(0.12);
+    expect(maxAltitude).toBeLessThan(0.32);
     expect(Math.abs(result.state.velocity[2])).toBeLessThan(0.2);
     env.dispose();
   });

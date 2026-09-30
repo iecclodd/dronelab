@@ -5,6 +5,7 @@ import * as THREE from "three";
 import type { MutableRefObject } from "react";
 import type { PhysicalState } from "../../../packages/contracts";
 import { applyRimToToon } from "./cel-material";
+import { droneFx } from "./combat-store";
 
 const modelUrl = `${import.meta.env.BASE_URL}models/neon-quad.glb`;
 const basis = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
@@ -63,6 +64,12 @@ export function BlenderDrone({ state, ghost = false, hidden = false }: BlenderDr
     rotation.set(...current.quaternion);
     rotation.premultiply(basis).multiply(basisInverse);
     group.current.quaternion.slerp(rotation, Math.min(1, dt * 28));
+    // Squash on bounce, then a springy overshoot back to rest.
+    const since = (performance.now() - droneFx.squashAt) / 1000;
+    if (!ghost && since < 0.45) {
+      const wobble = Math.exp(-since * 9) * Math.cos(since * 34) * 0.45 * droneFx.squashStrength;
+      group.current.scale.set(1 + wobble, 1 - wobble, 1 + wobble);
+    } else group.current.scale.setScalar(1);
     for (let index = 0; index < rotors.length; index += 1) {
       const rotor = rotors[index];
       if (rotor) rotor.rotation.y += dt * (current.motors[index] ?? 0.3) * 75;

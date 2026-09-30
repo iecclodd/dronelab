@@ -15,9 +15,16 @@ export type ControllerId =
   | "scripted"
   | "random"
   | "learned";
+/**
+ * Optional one-shot velocity kick (m/s) for the arcade profile: dashes,
+ * explosion knockback and recoil. `pulse` identifies it so a held command
+ * applies the kick exactly once. Research dynamics ignore both fields.
+ */
+export interface ActionImpulse { impulse?: V3; pulse?: number }
 export type Action =
-  | { kind: "nav"; velocity: V3; yawRate: number }
-  | { kind: "rate"; rates: V3; thrust: number };
+  | ({ kind: "nav"; velocity: V3; yawRate: number } & ActionImpulse)
+  | ({ kind: "rate"; rates: V3; thrust: number } & ActionImpulse);
+export const MAX_ACTION_IMPULSE = 40;
 export const ZERO_ACTION: Action = {
   kind: "nav",
   velocity: [0, 0, 0],
@@ -79,6 +86,8 @@ export interface PhysicalState {
   terminated: boolean;
   truncated: boolean;
   reason: string;
+  /** Arcade only: the latest energetic bounce, for presentation effects. */
+  impact?: { step: number; speed: number; normal: V3 };
 }
 export interface Observation {
   version: "state-v1";
@@ -281,5 +290,15 @@ export function validateAction(value: unknown): Action {
     throw new Error("Action vector must contain three finite values");
   if (!Number.isFinite(a.kind === "nav" ? a.yawRate : a.thrust))
     throw new Error("Invalid action scalar");
+  if (a.impulse !== undefined) {
+    if (
+      !Array.isArray(a.impulse) ||
+      a.impulse.length !== 3 ||
+      a.impulse.some((v) => !Number.isFinite(v)) ||
+      Math.hypot(...a.impulse) > MAX_ACTION_IMPULSE + 1e-6
+    )
+      throw new Error("Invalid action impulse");
+    if (!Number.isInteger(a.pulse)) throw new Error("Impulse requires an integer pulse");
+  }
   return structuredClone(a);
 }

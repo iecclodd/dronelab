@@ -3,6 +3,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import type { PhysicalState } from "../../../packages/contracts";
 import { stylizedTime } from "./cel-material";
+import { cameraShake } from "./combat-store";
 
 /**
  * Per-world art direction for the screen-space ink + grade pass. Values are
@@ -28,14 +29,14 @@ export interface ToonLook {
 
 export const LOOKS: Record<"valley" | "pizzeria" | "lab", ToonLook> = {
   valley: {
-    ink: [0.3, 0.26, 0.42], inkStrength: 0.92, inkFade: [70, 260],
+    ink: [0.16, 0.13, 0.24], inkStrength: 1, inkFade: [90, 320],
     shadowTint: [0.78, 0.8, 1.22], lightTint: [1.07, 1.01, 0.9],
-    saturation: 1.12, halftone: 0.16, glow: 0.55, glowThreshold: 2.4, vignette: 0.22, sun: [-150, 72, 62],
+    saturation: 1.12, halftone: 0.3, glow: 0.55, glowThreshold: 2.4, vignette: 0.22, sun: [-150, 72, 62],
   },
   pizzeria: {
-    ink: [0.2, 0.14, 0.3], inkStrength: 0.95, inkFade: [18, 48],
+    ink: [0.12, 0.09, 0.2], inkStrength: 1, inkFade: [22, 55],
     shadowTint: [0.86, 0.72, 1.3], lightTint: [1.1, 0.98, 0.84],
-    saturation: 1.18, halftone: 0.22, glow: 0.85, glowThreshold: 0.9, vignette: 0.34, sun: [-12, 15, 8],
+    saturation: 1.18, halftone: 0.34, glow: 0.85, glowThreshold: 0.9, vignette: 0.34, sun: [-12, 15, 8],
   },
   lab: {
     ink: [0.38, 0.4, 0.42], inkStrength: 0.6, inkFade: [30, 120],
@@ -70,8 +71,12 @@ uniform float glowThreshold;
 uniform float vignette;
 uniform vec3 sunView;
 uniform float speed;
-uniform float impact;
+uniform float punch;
+uniform float time;
+uniform float grain;
 varying vec2 vUv;
+
+float hash12(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 
 float viewDepth(vec2 uv) {
   float z = texture2D(tDepth, uv).x;
@@ -81,20 +86,17 @@ vec3 viewNormal(vec2 uv) { return texture2D(tNormal, uv).xyz * 2.0 - 1.0; }
 
 void main() {
   vec2 px = thickness / resolution;
-  vec2 fromCenter = vUv - 0.5;
+  // Punch-in: a brief zoom toward the centre on kills (replaces flash frames).
+  vec2 uv = 0.5 + (vUv - 0.5) * (1.0 - punch * 0.045);
+  vec2 fromCenter = uv - 0.5;
 
   // Velocity streak: a short radial smear that only reaches the periphery.
-  vec3 col = texture2D(tColor, vUv).rgb;
+  vec3 col = texture2D(tColor, uv).rgb;
   if (speed > 0.001) {
     float edge = smoothstep(0.12, 0.62, length(fromCenter));
     vec3 acc = col;
-    for (int i = 1; i <= 5; i++) acc += texture2D(tColor, vUv - fromCenter * float(i) * 0.011 * speed).rgb;
+    for (int i = 1; i <= 5; i++) acc += texture2D(tColor, uv - fromCenter * float(i) * 0.011 * speed).rgb;
     col = mix(col, acc / 6.0, edge);
-  }
-  if (impact > 0.001) {
-    vec2 split = fromCenter * 0.018 * impact;
-    col.r = mix(col.r, texture2D(tColor, vUv + split).r, 0.9);
-    col.b = mix(col.b, texture2D(tColor, vUv - split).b, 0.9);
   }
 
   // Cheap bloom for emissive fixtures that exceed 1.0 in the HDR target.
@@ -105,7 +107,7 @@ void main() {
       float weight = 1.0 - float(ring) * 0.28;
       for (int i = 0; i < 10; i++) {
         float a = float(i) * 0.628318 + float(ring) * 0.31;
-        halo += clamp(texture2D(tColor, vUv + vec2(cos(a), sin(a)) * px * radius).rgb - glowThreshold, 0.0, 8.0) * weight;
+        halo += clamp(texture2D(tColor, uv + vec2(cos(a), sin(a)) * px * radius).rgb - glowThreshold, 0.0, 8.0) * weight;
       }
     }
     col += halo * glow * 0.035;
@@ -113,22 +115,26 @@ void main() {
 
   // Ink. Planar surfaces have screen-affine inverse depth, so the Laplacian
   // of 1/z is zero across them and spikes only at silhouettes/convex creases.
-  float d0 = viewDepth(vUv);
+  // Line boil: the ink samples jitter on a held 8 fps clock, like redrawn
+  // animation frames, so outlines read as hand-inked rather than computed.
+  vec2 boil = (vec2(hash12(floor(gl_FragCoord.xy / 5.0) + floor(time * 8.0)), hash12(floor(gl_FragCoord.yx / 5.0) + floor(time * 8.0) + 3.1)) - 0.5) * px * 1.1;
+  vec2 inkUv = uv + boil;
+  float d0 = viewDepth(uv);
   bool sky = d0 > cameraFar * 0.98;
   float ink = 0.0;
   if (!sky) {
-    float dl = viewDepth(vUv - vec2(px.x, 0.0));
-    float dr = viewDepth(vUv + vec2(px.x, 0.0));
-    float du = viewDepth(vUv + vec2(0.0, px.y));
-    float dd = viewDepth(vUv - vec2(0.0, px.y));
+    float dl = viewDepth(inkUv - vec2(px.x, 0.0));
+    float dr = viewDepth(inkUv + vec2(px.x, 0.0));
+    float du = viewDepth(inkUv + vec2(0.0, px.y));
+    float dd = viewDepth(inkUv - vec2(0.0, px.y));
     float i0 = 1.0 / d0;
     float lx = (i0 - 0.5 * (1.0 / dl + 1.0 / dr)) / i0;
     float ly = (i0 - 0.5 * (1.0 / du + 1.0 / dd)) / i0;
     float depthInk = smoothstep(0.018, 0.06, max(lx, ly));
 
-    vec3 n0 = viewNormal(vUv);
-    vec3 nr = viewNormal(vUv + vec2(px.x, 0.0));
-    vec3 nd = viewNormal(vUv - vec2(0.0, px.y));
+    vec3 n0 = viewNormal(uv);
+    vec3 nr = viewNormal(inkUv + vec2(px.x, 0.0));
+    vec3 nd = viewNormal(inkUv - vec2(0.0, px.y));
     float bend = max(1.0 - dot(n0, nr), 1.0 - dot(n0, nd));
     float farSide = step(cameraFar * 0.98, max(dr, dd));
     float normalInk = smoothstep(0.28, 0.55, bend) * (1.0 - farSide);
@@ -136,14 +142,20 @@ void main() {
     float fade = 1.0 - smoothstep(inkFade.x, inkFade.y, d0);
     ink = max(depthInk, normalInk * 0.85) * fade * inkStrength;
 
-    // Screentone on faces turned from the key light (manga / Hi-Fi Rush comic
-    // shading). Normal-based, so it sits evenly on a face instead of tracing
+    // Manga hatching on faces turned from the key light: single diagonal
+    // strokes in shade, cross-hatching where the shade is also dark.
+    // Normal-based, so strokes sit evenly on a face instead of tracing
     // luminance contours through fog and light shafts.
     if (halftone > 0.0) {
-      float away = smoothstep(0.05, -0.2, dot(n0, sunView)) * (1.0 - smoothstep(18.0, 55.0, d0));
-      vec2 cell = mat2(0.7071, -0.7071, 0.7071, 0.7071) * gl_FragCoord.xy / (4.5 * thickness);
-      float dotMask = 1.0 - smoothstep(0.2, 0.3, length(fract(cell) - 0.5));
-      col *= 1.0 - dotMask * halftone * away;
+      float away = smoothstep(0.05, -0.2, dot(n0, sunView)) * (1.0 - smoothstep(18.0, 60.0, d0));
+      float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      vec2 f = gl_FragCoord.xy / thickness;
+      float wob = sin(f.y * 0.045 + f.x * 0.013) * 1.4;
+      float strokeA = 1.0 - smoothstep(0.1, 0.2, abs(fract((f.x + f.y + wob) / 5.5) - 0.5));
+      float strokeB = 1.0 - smoothstep(0.1, 0.2, abs(fract((f.x - f.y - wob) / 5.5) - 0.5));
+      float deep = 1.0 - smoothstep(0.02, 0.09, lum);
+      float hatch = max(strokeA, strokeB * deep) * away;
+      col *= 1.0 - hatch * halftone;
     }
   }
 
@@ -159,6 +171,10 @@ void main() {
   #include <colorspace_fragment>
   float v = smoothstep(0.42, 0.95, length(fromCenter * vec2(1.25, 1.0)));
   gl_FragColor.rgb *= 1.0 - vignette * v;
+  // Paper: static fibre grain, a touch warmer in the whites.
+  float paper = hash12(floor(gl_FragCoord.xy)) * 0.6 + hash12(floor(gl_FragCoord.xy / 3.0)) * 0.4;
+  gl_FragColor.rgb *= 1.0 - grain * (paper - 0.5);
+  gl_FragColor.rgb = mix(gl_FragColor.rgb, gl_FragColor.rgb * vec3(1.0, 0.975, 0.93), grain * 2.0 * smoothstep(0.7, 1.0, dot(gl_FragColor.rgb, vec3(0.333))));
 }
 `;
 
@@ -282,7 +298,9 @@ export function ToonPipeline({
         vignette: { value: 0 },
         sunView: { value: new THREE.Vector3() },
         speed: { value: 0 },
-        impact: { value: 0 },
+        punch: { value: 0 },
+        time: { value: 0 },
+        grain: { value: 0.07 },
       },
     });
     const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
@@ -296,7 +314,7 @@ export function ToonPipeline({
       clear: new THREE.Color(),
       sun: new THREE.Vector3(),
       buffer: new THREE.Vector2(),
-      fx: { speed: 0, impact: 0, collisions: 0, time: -1 },
+      fx: { speed: 0 },
       governor: { frames: 0, elapsed: 0, fast: 0, samples: activeTier === 2 ? 4 : 0 },
     };
   }, []);
@@ -337,7 +355,7 @@ export function ToonPipeline({
     pipeline.color.setSize(x, y);
     pipeline.normal.setSize(x, y);
     pipeline.material.uniforms.resolution.value.set(x, y);
-    pipeline.material.uniforms.thickness.value = Math.max(1, Math.min(2.5, y / 820));
+    pipeline.material.uniforms.thickness.value = Math.max(1.25, Math.min(3, y / 640));
   }, [gl, size, pipeline]);
 
   useFrame((_, dt) => {
@@ -351,18 +369,12 @@ export function ToonPipeline({
     u.sunView.value.copy(pipeline.sun);
 
     const s = state.current;
-    let targetSpeed = 0;
-    if (s) {
-      if (s.time < fx.time) fx.collisions = 0;
-      if (s.collisions > fx.collisions && effectsEnabled) fx.impact = 1;
-      fx.collisions = s.collisions;
-      fx.time = s.time;
-      if (effectsEnabled && firstPerson) targetSpeed = THREE.MathUtils.clamp((Math.hypot(...s.velocity) - 10) / 22, 0, 1);
-    }
+    const targetSpeed = s && effectsEnabled && firstPerson ? THREE.MathUtils.clamp((Math.hypot(...s.velocity) - 12) / 24, 0, 1) : 0;
     fx.speed = THREE.MathUtils.lerp(fx.speed, targetSpeed, 1 - Math.exp(-dt * 5));
-    fx.impact = Math.max(0, fx.impact - dt * 4.5);
     u.speed.value = fx.speed;
-    u.impact.value = effectsEnabled ? fx.impact : 0;
+    u.punch.value = effectsEnabled ? cameraShake.punch : 0;
+    cameraShake.punch = Math.max(0, cameraShake.punch - dt * 7);
+    u.time.value = stylizedTime.value;
 
     // Auto quality: step down when sustained frame rate drops below ~24 fps,
     // step back up only after several comfortably fast windows.

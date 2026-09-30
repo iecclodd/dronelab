@@ -17,3 +17,7 @@ Explore explicitly selects `flightFeel: arcade`. Omitted profiles and practice m
 ## Cel visual pass
 
 `toon-pipeline.tsx` owns rendering (priority-1 `useFrame`): colour pass → normal/depth pass → ink/grade composite, with Auto/High/Balanced/Performance tiers. New meshes are inked unless they are transparent, Basic/Shader materials, lines or points; opt in with `userData.ink` or out with `userData.noInk`. `ValleySky`/`ValleyDressing`/`PizzeriaDressing`/`WorldFx` hold non-colliding dressing only: keep scenery outside the flight bounds or flush with or inside existing colliders. `nav-store.ts` shares next-spot state between GameOverlay and the beacons. Research and sources: docs/CEL_SHADING_RESEARCH.md.
+
+## Arcade combat pass
+
+Explore's arcade profile is a hover-ball model (sim-core `arcadeDrive`): camera-relative velocity chase, reflective bounces, springy map edges, and one-shot `impulse`/`pulse` kicks on actions. Never apply it to research or missions. `combat-store.ts` connects input, `CombatLayer.tsx` (gun, targets, explosions, ramming) and `CombatHud.tsx`. `window.dronelabCombat` is a read-only test hook. Keep new bindings consistent with docs/ARCADE_COMBAT.md.

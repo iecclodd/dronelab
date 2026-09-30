@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import { ACTION_REPEAT, DT, type Action, type ControllerId, type FlightFeel, type PhysicalState, type Q4, type V3 } from "../../../packages/contracts";
+import { combatEvents, combatInput, queueKick, takeKick } from "./combat-store";
 
 export type FlightLook = { yaw: number; pitch: number };
 
@@ -7,10 +8,17 @@ const DEADZONE = 0.12;
 const MAX_LOOK_PITCH = (80 * Math.PI) / 180;
 const RESEARCH_NAV_SPEED = 7;
 const RESEARCH_BOOST_SPEED = 13;
-const ARCADE_OUTDOOR_NAV_SPEED = 18;
-const ARCADE_OUTDOOR_BOOST_SPEED = 30;
-const ARCADE_INDOOR_NAV_SPEED = 10;
-const ARCADE_INDOOR_BOOST_SPEED = 16;
+const ARCADE_OUTDOOR_NAV_SPEED = 20;
+const ARCADE_OUTDOOR_BOOST_SPEED = 32;
+const ARCADE_INDOOR_NAV_SPEED = 11;
+const ARCADE_INDOOR_BOOST_SPEED = 17;
+/** Arcade dash (Shift tap): a one-shot kick in the move/aim direction. */
+const DASH_KICK = 19;
+const DASH_COOLDOWN = 0.6;
+/** Keyboard turning (Q/E) of the camera, which the drone then follows. */
+const KEY_TURN_RATE = 2.4;
+/** How hard the drone's heading chases the camera's (rad/s per rad of error). */
+const HEADING_FOLLOW_GAIN = 8;
 const HOVER_THRUST = 0.42;
 const THROTTLE_RATE = 0.38;
 const BASE_MOUSE_SENSITIVITY = 0.0024;
@@ -139,6 +147,56 @@ export function assistedAction(
   };
 }
 
+const wrapAngle = (angle: number) => Math.atan2(Math.sin(angle), Math.cos(angle));
+
+/** ENU heading (radians from east, CCW) of the airframe's forward axis. */
+export function headingOf(quaternion: Q4) {
+  const forward = rotate(quaternion, [1, 0, 0]);
+  return Math.atan2(forward[1], forward[0]);
+}
+
+/**
+ * Arcade Explore: movement is camera-relative. W/S follow the full aim
+ * direction (look up and W climbs), A/D strafe along the camera's horizontal
+ * right, Space/C are world up/down, and the airframe's heading chases the
+ * camera heading so the controls always match what's on screen.
+ */
+export function cameraRelativeAction(
+  quaternion: Q4,
+  look: FlightLook,
+  input: { forward: number; right: number; up: number; boost?: boolean; mapId?: "valley" | "pizzeria" },
+): Extract<Action, { kind: "nav" }> {
+  const speeds = assistedSpeeds("arcade", input.mapId);
+  const speed = input.boost ? speeds.boost : speeds.cruise;
+  const aim = flightForward(levelFlightQuaternion(quaternion), look.yaw, look.pitch);
+  const horizontal = horizontalForward(levelFlightQuaternion(quaternion), look.yaw);
+  const right: V3 = [horizontal[1], -horizontal[0], 0];
+  const direction: V3 = [
+    aim[0] * input.forward + right[0] * input.right,
+    aim[1] * input.forward + right[1] * input.right,
+    aim[2] * input.forward + input.up,
+  ];
+  const size = Math.hypot(...direction);
+  const scale = size > 1 ? speed / size : speed;
+  return {
+    kind: "nav",
+    velocity: [direction[0] * scale, direction[1] * scale, direction[2] * scale],
+    yawRate: clamp(wrapAngle(look.yaw) * HEADING_FOLLOW_GAIN, -9, 9),
+  };
+}
+
+/** Arcade Explore bindings: WASD move, Space/C rise/sink, Q/E turn, Shift dash/boost, F fire. */
+export function arcadeKeyboardAxes(keys: ReadonlySet<string>) {
+  return {
+    forward: keyAxis(keys, ["KeyW", "ArrowUp"], ["KeyS", "ArrowDown"]),
+    right: keyAxis(keys, ["KeyD", "ArrowRight"], ["KeyA", "ArrowLeft"]),
+    up: keyAxis(keys, "Space", "KeyC"),
+    turn: keyAxis(keys, "KeyQ", "KeyE"),
+    boost: keys.has("ShiftLeft") || keys.has("ShiftRight"),
+    fire: keys.has("KeyF"),
+  };
+}
+
 /** FLU rate command: x roll, y pitch, z yaw. Positive pitch lowers the nose. */
 export function acroAction(
   input: { roll: number; pitch: number; yaw: number },
@@ -252,7 +310,12 @@ export function useFlightControls({
   const [sensitivity, setSensitivityState] = useState(1);
   const sensitivityRef = useRef(sensitivity);
   const callbacks = useRef({ sendAction, pause, restart, cycleCamera });
-  const lookEnabled = enabled && cameraMode === "FPV";
+  const arcadeExplore = flightFeel === "arcade";
+  // Arcade Explore is a third-person action camera too, so Chase can aim.
+  const lookEnabled = enabled && (cameraMode === "FPV" || (arcadeExplore && cameraMode === "Chase"));
+  const arcadeRef = useRef(arcadeExplore);
+  arcadeRef.current = arcadeExplore;
+  const mouseFire = useRef(false);
 
   useEffect(() => {
     callbacks.current = { sendAction, pause, restart, cycleCamera };
@@ -273,6 +336,8 @@ export function useFlightControls({
   const resetLook = useCallback(() => { lookRef.current = { yaw: 0, pitch: 0 }; }, []);
   const clearFlight = useCallback((shouldPause = false) => {
     keys.current.clear();
+    mouseFire.current = false;
+    combatInput.trigger = false;
     previousActive.current = false;
     if (shouldPause) callbacks.current.pause();
   }, []);
@@ -337,6 +402,7 @@ export function useFlightControls({
       lockedRef.current = nextLocked;
       setLocked(nextLocked);
       if (nextLocked) releaseDrag();
+      if (!nextLocked) mouseFire.current = false;
       if (wasLocked && !nextLocked && !intentional) clearFlight(true);
     };
     document.addEventListener("pointerlockchange", pointerLockChange);
@@ -371,6 +437,15 @@ export function useFlightControls({
     const lockedMove = (event: MouseEvent) => {
       if (lookEnabled && lockedRef.current) applyLook(event.movementX, event.movementY);
     };
+    // With the cursor captured, the left button is the trigger.
+    const lockedDown = (event: MouseEvent) => {
+      if (lockedRef.current && event.button === 0 && arcadeRef.current) mouseFire.current = true;
+    };
+    const lockedUp = (event: MouseEvent) => {
+      if (event.button === 0) mouseFire.current = false;
+    };
+    document.addEventListener("mousedown", lockedDown);
+    document.addEventListener("mouseup", lockedUp);
     attach();
     const observer = new MutationObserver(attach);
     observer.observe(document.body, { childList: true, subtree: true });
@@ -381,6 +456,8 @@ export function useFlightControls({
       observer.disconnect();
       detach();
       document.removeEventListener("mousemove", lockedMove);
+      document.removeEventListener("mousedown", lockedDown);
+      document.removeEventListener("mouseup", lockedUp);
       window.removeEventListener("pointerup", releaseDrag);
       window.removeEventListener("blur", releaseDrag);
     };
@@ -401,7 +478,8 @@ export function useFlightControls({
         callbacks.current.restart();
         return;
       }
-      if (event.code === "KeyC" && !event.repeat) {
+      // Arcade uses C to sink, so V cycles cameras there (V always works).
+      if ((event.code === "KeyV" || (event.code === "KeyC" && !arcadeRef.current)) && !event.repeat) {
         event.preventDefault();
         callbacks.current.cycleCamera();
         return;
@@ -411,7 +489,7 @@ export function useFlightControls({
         callbacks.current.pause();
         return;
       }
-      if (!flightKey.has(event.code)) return;
+      if (!flightKey.has(event.code) && !(arcadeRef.current && event.code === "KeyC")) return;
       event.preventDefault();
       keys.current.add(event.code);
     };
@@ -436,10 +514,37 @@ export function useFlightControls({
     let frame = 0;
     let previousTime: number | undefined;
     let sinceLastAction = ACTION_SEND_PERIOD;
+    let previousHeading: number | undefined;
+    let dashReady = 0;
+    let dashHeld = false;
+    const arcade = flightFeel === "arcade";
     const tick = (now: number) => {
       const elapsed = previousTime === undefined ? 0 : Math.min((now - previousTime) / 1000, 0.1);
       previousTime = now;
       sinceLastAction += elapsed;
+      const flying = enabled && modeRef.current === "realtime";
+      combatInput.trigger = flying && arcade && (keys.current.has("KeyF") || mouseFire.current);
+      if (arcade && controller === "manual" && state.current) {
+        // Camera-follow: when the airframe turns toward the camera, give the
+        // turn back to the look offset so the camera itself holds still.
+        const heading = headingOf(levelFlightQuaternion(state.current.quaternion));
+        if (previousHeading !== undefined) lookRef.current.yaw = wrapAngle(lookRef.current.yaw - wrapAngle(heading - previousHeading));
+        previousHeading = heading;
+        if (flying) lookRef.current.yaw += arcadeKeyboardAxes(keys.current).turn * KEY_TURN_RATE * elapsed;
+      } else previousHeading = undefined;
+      if (arcade && flying && controller === "manual") {
+        dashReady = Math.max(0, dashReady - elapsed);
+        const axes = arcadeKeyboardAxes(keys.current);
+        if (axes.boost && !dashHeld && dashReady === 0 && state.current) {
+          const dir = cameraRelativeAction(state.current.quaternion, lookRef.current, { ...axes, forward: axes.forward || axes.right || axes.up ? axes.forward : 1, mapId }).velocity;
+          const size = Math.hypot(...dir) || 1;
+          queueKick([dir[0] / size * DASH_KICK, dir[1] / size * DASH_KICK, dir[2] / size * DASH_KICK]);
+          dashReady = DASH_COOLDOWN;
+          combatEvents.emit({ type: "dash" });
+          sinceLastAction = ACTION_SEND_PERIOD;
+        }
+        dashHeld = axes.boost;
+      }
       if (sinceLastAction < ACTION_SEND_PERIOD) {
         frame = window.requestAnimationFrame(tick);
         return;
@@ -478,8 +583,22 @@ export function useFlightControls({
           pitch: keyboard.forward || gamepad.pitch,
           yaw: keyboard.yaw || gamepad.yaw,
         };
-        action = acroAction(rateInput, throttleRef.current);
+        action = { ...acroAction(rateInput, throttleRef.current), ...(arcade ? takeKick() : undefined) };
         callbacks.current.sendAction(action);
+      } else if (arcade) {
+        const axes = arcadeKeyboardAxes(keysNow);
+        const input = {
+          forward: axes.forward || gamepad.pitch,
+          right: axes.right || gamepad.roll,
+          up: axes.up || gamepad.throttle,
+          boost: axes.boost,
+          mapId,
+        };
+        if (gamepad.yaw) lookRef.current.yaw += gamepad.yaw * KEY_TURN_RATE * Math.max(elapsed, ACTION_SEND_PERIOD);
+        const kick = takeKick();
+        active = Math.abs(input.forward) > 0 || Math.abs(input.right) > 0 || Math.abs(input.up) > 0 || Math.abs(wrapAngle(lookRef.current.yaw)) > 0.01 || !!kick;
+        action = { ...cameraRelativeAction(state.current?.quaternion ?? [0, 0, 0, 1], lookRef.current, input), ...kick };
+        if (active || previousActive.current) callbacks.current.sendAction(action);
       } else {
         active = Math.abs(assisted.forward) > 0 || Math.abs(assisted.right) > 0 || Math.abs(assisted.up) > 0 || Math.abs(assisted.yaw) > 0;
         action = assistedAction(
