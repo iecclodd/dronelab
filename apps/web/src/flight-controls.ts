@@ -9,6 +9,8 @@ const NAV_SPEED = 7;
 const BOOST_SPEED = 13;
 const HOVER_THRUST = 0.42;
 const THROTTLE_STEP = 0.025;
+const BASE_MOUSE_SENSITIVITY = 0.0024;
+const DEFAULT_CAMERA_TILT = 15;
 
 export const clamp = (value: number, low: number, high: number) =>
   Math.max(low, Math.min(high, value));
@@ -20,26 +22,69 @@ export function deadzone(value: number, amount = DEADZONE): number {
   return (Math.abs(limited) - amount) / (1 - amount) * Math.sign(limited);
 }
 
-/** ENU horizontal forward from the FLU body x axis, with look yaw positive to the left. */
-export function horizontalForward(quaternion: Q4, lookYaw = 0): V3 {
-  const [x, y, z, w] = quaternion;
-  const bodyX = 1 - 2 * (y * y + z * z);
-  const bodyY = 2 * (x * y + w * z);
+type Quat = [number, number, number, number];
+
+const quaternionProduct = (a: Q4, b: Q4): Quat => [
+  a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+  a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+  a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+  a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+];
+
+const axisAngle = (axis: V3, angle: number): Quat => {
+  const half = angle / 2;
+  const sin = Math.sin(half);
+  return [axis[0] * sin, axis[1] * sin, axis[2] * sin, Math.cos(half)];
+};
+
+const rotate = (q: Q4, [x, y, z]: V3): V3 => {
+  const [qx, qy, qz, qw] = q;
+  const uv: V3 = [qy * z - qz * y, qz * x - qx * z, qx * y - qy * x];
+  const uuv: V3 = [
+    qy * uv[2] - qz * uv[1],
+    qz * uv[0] - qx * uv[2],
+    qx * uv[1] - qy * uv[0],
+  ];
+  return [
+    x + 2 * (qw * uv[0] + uuv[0]),
+    y + 2 * (qw * uv[1] + uuv[1]),
+    z + 2 * (qw * uv[2] + uuv[2]),
+  ];
+};
+
+/** Camera forward in ENU from FLU body orientation and local FPV look offsets. */
+export function flightForward(
+  quaternion: Q4,
+  lookYaw = 0,
+  lookPitch = 0,
+): V3 {
+  const yaw = axisAngle([0, 0, 1], lookYaw);
+  // Camera pitch rotates around its right axis (-body y): positive looks up.
+  const pitch = axisAngle([0, -1, 0], lookPitch);
+  return rotate(quaternionProduct(quaternionProduct(quaternion, yaw), pitch), [1, 0, 0]);
+}
+
+/** ENU horizontal FPV forward, with yaw applied in the airframe's local frame. */
+export function horizontalForward(
+  quaternion: Q4,
+  lookYaw = 0,
+  lookPitch = 0,
+): V3 {
+  const [bodyX, bodyY] = flightForward(quaternion, lookYaw, lookPitch);
   const length = Math.hypot(bodyX, bodyY);
   const east = length > 1e-6 ? bodyX / length : 1;
   const north = length > 1e-6 ? bodyY / length : 0;
-  const cos = Math.cos(lookYaw);
-  const sin = Math.sin(lookYaw);
-  return [east * cos - north * sin, east * sin + north * cos, 0];
+  return [east, north, 0];
 }
 
 export function assistedAction(
   quaternion: Q4,
   lookYaw: number,
   input: { forward: number; right: number; up: number; yaw: number; boost?: boolean },
+  lookPitch = 0,
 ): Action {
   const speed = input.boost ? BOOST_SPEED : NAV_SPEED;
-  const forward = horizontalForward(quaternion, lookYaw);
+  const forward = horizontalForward(quaternion, lookYaw, lookPitch);
   const right: V3 = [forward[1], -forward[0], 0];
   return {
     kind: "nav",
@@ -52,7 +97,7 @@ export function assistedAction(
   };
 }
 
-/** FLU rate command: x roll, y pitch, z yaw. Positive pitch lifts the nose. */
+/** FLU rate command: x roll, y pitch, z yaw. Positive pitch lowers the nose. */
 export function acroAction(
   input: { roll: number; pitch: number; yaw: number },
   thrust: number,
@@ -68,6 +113,25 @@ export function acroAction(
   };
 }
 
+/** Standard Mode 2 gamepad axes: yaw, throttle, roll, pitch. */
+export function mode2Axes(
+  axes: readonly number[],
+  calibration: readonly number[] = [],
+  amount = DEADZONE,
+) {
+  const axis = (index: number) => deadzone((axes[index] ?? 0) - (calibration[index] ?? 0), amount);
+  const yaw = axis(0);
+  const throttle = axis(1);
+  const roll = axis(2);
+  const pitch = axis(3);
+  return {
+    yaw: yaw === 0 ? 0 : -yaw,
+    throttle: throttle === 0 ? 0 : -throttle,
+    roll,
+    pitch: pitch === 0 ? 0 : -pitch,
+  };
+}
+
 type FlightControlsOptions = {
   state: MutableRefObject<PhysicalState | undefined>;
   controller: ControllerId;
@@ -78,6 +142,8 @@ type FlightControlsOptions = {
   restart: () => void;
   cycleCamera: () => void;
   calibrationRef: MutableRefObject<number[]>;
+  cameraMode?: "FPV" | "Chase" | "Orbit";
+  cameraTilt?: number;
 };
 
 const flightKey = new Set([
@@ -103,6 +169,8 @@ export function useFlightControls({
   restart,
   cycleCamera,
   calibrationRef,
+  cameraMode = "FPV",
+  cameraTilt = DEFAULT_CAMERA_TILT,
 }: FlightControlsOptions) {
   const lookRef = useRef<FlightLook>({ yaw: 0, pitch: 0 });
   const keys = useRef(new Set<string>());
@@ -113,27 +181,38 @@ export function useFlightControls({
   const [locked, setLocked] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [throttle, setThrottle] = useState(HOVER_THRUST);
-  const [sensitivity, setSensitivityState] = useState(0.0024);
+  const [sensitivity, setSensitivityState] = useState(1);
   const sensitivityRef = useRef(sensitivity);
+  const callbacks = useRef({ sendAction, pause, restart, cycleCamera });
+  const lookEnabled = enabled && cameraMode === "FPV";
+
+  useEffect(() => {
+    callbacks.current = { sendAction, pause, restart, cycleCamera };
+  }, [sendAction, pause, restart, cycleCamera]);
 
   const setSensitivity = useCallback((value: number) => {
-    const next = clamp(value, 0.0002, 0.02);
+    const next = clamp(value, 0.25, 2);
     sensitivityRef.current = next;
     setSensitivityState(next);
   }, []);
-  const resetLook = useCallback(() => {
+  const resetControls = useCallback(() => {
+    keys.current.clear();
+    previousActive.current = false;
     lookRef.current = { yaw: 0, pitch: 0 };
+    throttleRef.current = HOVER_THRUST;
+    setThrottle(HOVER_THRUST);
   }, []);
+  const resetLook = useCallback(() => { lookRef.current = { yaw: 0, pitch: 0 }; }, []);
   const clearFlight = useCallback((shouldPause = false) => {
     keys.current.clear();
     previousActive.current = false;
-    if (shouldPause) pause();
-  }, [pause]);
+    if (shouldPause) callbacks.current.pause();
+  }, []);
   const applyLook = useCallback((movementX: number, movementY: number) => {
     const look = lookRef.current;
-    look.yaw -= movementX * sensitivityRef.current;
+    look.yaw -= movementX * BASE_MOUSE_SENSITIVITY * sensitivityRef.current;
     look.pitch = clamp(
-      look.pitch - movementY * sensitivityRef.current,
+      look.pitch - movementY * BASE_MOUSE_SENSITIVITY * sensitivityRef.current,
       -MAX_LOOK_PITCH,
       MAX_LOOK_PITCH,
     );
@@ -145,9 +224,24 @@ export function useFlightControls({
   }, []);
   const engageLook = useCallback(() => {
     const canvas = document.querySelector<HTMLCanvasElement>("#flight-stage canvas");
-    if (!canvas || !enabled) return;
-    canvas.requestPointerLock?.();
-  }, [enabled]);
+    if (!canvas || !lookEnabled) return;
+    const fallback = () => {
+      if (!lockedRef.current && lookEnabled) {
+        draggingRef.current = true;
+        setDragging(true);
+      }
+    };
+    try {
+      const request = canvas.requestPointerLock?.();
+      if (!request) {
+        if (!canvas.requestPointerLock) fallback();
+        return;
+      }
+      void request.catch(fallback);
+    } catch {
+      fallback();
+    }
+  }, [lookEnabled]);
 
   useEffect(() => {
     if (!enabled) {
@@ -155,6 +249,16 @@ export function useFlightControls({
       releaseDrag();
     }
   }, [enabled, clearFlight, releaseDrag]);
+
+  useEffect(() => {
+    if (lookEnabled) return;
+    releaseDrag();
+    if (lockedRef.current) document.exitPointerLock?.();
+  }, [lookEnabled, releaseDrag]);
+
+  useEffect(() => {
+    if (controller === "rate") resetControls();
+  }, [controller, resetControls]);
 
   useEffect(() => {
     const pointerLockChange = () => {
@@ -186,17 +290,17 @@ export function useFlightControls({
       canvas = undefined;
     };
     const pointerDown = (event: PointerEvent) => {
-      if (!enabled || event.button !== 0 || lockedRef.current) return;
+      if (!lookEnabled || event.button !== 0 || lockedRef.current) return;
       draggingRef.current = true;
       setDragging(true);
       canvas?.setPointerCapture?.(event.pointerId);
     };
     const pointerMove = (event: PointerEvent) => {
-      if (enabled && draggingRef.current && !lockedRef.current)
+      if (lookEnabled && draggingRef.current && !lockedRef.current)
         applyLook(event.movementX, event.movementY);
     };
     const lockedMove = (event: MouseEvent) => {
-      if (enabled && lockedRef.current) applyLook(event.movementX, event.movementY);
+      if (lookEnabled && lockedRef.current) applyLook(event.movementX, event.movementY);
     };
     attach();
     const observer = new MutationObserver(attach);
@@ -211,7 +315,7 @@ export function useFlightControls({
       window.removeEventListener("pointerup", releaseDrag);
       window.removeEventListener("blur", releaseDrag);
     };
-  }, [applyLook, enabled, releaseDrag]);
+  }, [applyLook, lookEnabled, releaseDrag]);
 
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
@@ -224,17 +328,18 @@ export function useFlightControls({
       }
       if (event.code === "KeyR" && !event.repeat) {
         event.preventDefault();
-        restart();
+        resetControls();
+        callbacks.current.restart();
         return;
       }
       if (event.code === "KeyC" && !event.repeat) {
         event.preventDefault();
-        cycleCamera();
+        callbacks.current.cycleCamera();
         return;
       }
       if (event.code === "KeyP" && !event.repeat) {
         event.preventDefault();
-        pause();
+        callbacks.current.pause();
         return;
       }
       if (!flightKey.has(event.code)) return;
@@ -256,20 +361,19 @@ export function useFlightControls({
       window.removeEventListener("blur", blur);
       document.removeEventListener("visibilitychange", visibility);
     };
-  }, [clearFlight, cycleCamera, enabled, pause, restart]);
+  }, [clearFlight, enabled, resetControls]);
 
   useEffect(() => {
     const tick = () => {
       if (!enabled || modeRef.current !== "realtime" || !["manual", "rate"].includes(controller)) return;
       const keysNow = keys.current;
       const pad = navigator.getGamepads?.().find(Boolean);
-      const axis = (index: number) =>
-        deadzone((pad?.axes[index] ?? 0) - (calibrationRef.current[index] ?? 0));
+      const gamepad = mode2Axes(pad?.axes ?? [], calibrationRef.current);
       const assisted = {
-        forward: keyAxis(keysNow, "KeyW", "KeyS") || -axis(3),
-        right: keyAxis(keysNow, "KeyD", "KeyA") || axis(0),
-        up: keyAxis(keysNow, "Space", "ShiftLeft") || keyAxis(keysNow, "Space", "ShiftRight") || -axis(1),
-        yaw: keyAxis(keysNow, "KeyE", "KeyQ") || -axis(2),
+        forward: keyAxis(keysNow, "KeyW", "KeyS") || gamepad.pitch,
+        right: keyAxis(keysNow, "KeyD", "KeyA") || gamepad.roll,
+        up: keyAxis(keysNow, "Space", "ShiftLeft") || keyAxis(keysNow, "Space", "ShiftRight") || gamepad.throttle,
+        yaw: keyAxis(keysNow, "KeyQ", "KeyE") || gamepad.yaw,
         boost: keysNow.has("ControlLeft") || keysNow.has("ControlRight"),
       };
       let action: Action;
@@ -279,27 +383,32 @@ export function useFlightControls({
         if (vertical) {
           throttleRef.current = clamp(throttleRef.current + vertical * THROTTLE_STEP, 0, 1);
           setThrottle(throttleRef.current);
-        } else if (Math.abs(axis(1)) > 0) {
-          throttleRef.current = clamp(HOVER_THRUST - axis(1) * 0.5, 0, 1);
+        } else if (Math.abs(gamepad.throttle) > 0) {
+          throttleRef.current = clamp(HOVER_THRUST + gamepad.throttle * 0.5, 0, 1);
           setThrottle(throttleRef.current);
         }
         const rateInput = {
-          roll: keyAxis(keysNow, "KeyD", "KeyA") || axis(0),
-          pitch: keyAxis(keysNow, "KeyS", "KeyW") || axis(3),
-          yaw: keyAxis(keysNow, "KeyE", "KeyQ") || -axis(2),
+          roll: keyAxis(keysNow, "KeyD", "KeyA") || gamepad.roll,
+          pitch: keyAxis(keysNow, "KeyW", "KeyS") || gamepad.pitch,
+          yaw: keyAxis(keysNow, "KeyQ", "KeyE") || gamepad.yaw,
         };
-        active = !!vertical || Object.values(rateInput).some((value) => Math.abs(value) > 0);
         action = acroAction(rateInput, throttleRef.current);
+        callbacks.current.sendAction(action);
       } else {
         active = Math.abs(assisted.forward) > 0 || Math.abs(assisted.right) > 0 || Math.abs(assisted.up) > 0 || Math.abs(assisted.yaw) > 0;
-        action = assistedAction(state.current?.quaternion ?? [0, 0, 0, 1], lookRef.current.yaw, assisted);
+        action = assistedAction(
+          state.current?.quaternion ?? [0, 0, 0, 1],
+          lookRef.current.yaw,
+          assisted,
+          lookRef.current.pitch + (cameraTilt * Math.PI) / 180,
+        );
+        if (active || previousActive.current) callbacks.current.sendAction(action);
       }
-      if (active || previousActive.current) sendAction(action);
       previousActive.current = active;
     };
     const id = window.setInterval(tick, 65);
     return () => window.clearInterval(id);
-  }, [calibrationRef, controller, enabled, modeRef, sendAction, state]);
+  }, [calibrationRef, cameraTilt, controller, enabled, modeRef, state]);
 
-  return { lookRef, locked, dragging, throttle, engageLook, resetLook, sensitivity, setSensitivity };
+  return { lookRef, locked, dragging, throttle, engageLook, resetLook, resetControls, sensitivity, setSensitivity };
 }
