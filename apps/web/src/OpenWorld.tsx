@@ -1,8 +1,9 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { Text } from "@react-three/drei";
 import type { Scenario, V3 } from "../../../packages/contracts";
 import { FREE_WORLD } from "../../../packages/contracts/free-world";
 import { WorldDetails } from "./WorldDetails";
+import { createAsphaltMap, createDryGrassMap } from "./world-materials";
 
 const visual = ([x, y, z]: V3): [number, number, number] => [x, z, -y];
 const visualSize = ([x, y, z]: V3): [number, number, number] => [x, z, y];
@@ -36,31 +37,34 @@ export function OpenWorld({ scenario }: { scenario?: Scenario }) {
     [],
   );
   const obstacles = scenario?.id === "free" ? scenario.obstacles : FREE_WORLD.obstacles;
+  const [grassMap, asphaltMap] = useMemo(() => [createDryGrassMap(), createAsphaltMap()], []);
+  useEffect(() => () => { grassMap.dispose(); asphaltMap.dispose(); }, [grassMap, asphaltMap]);
 
   return (
     <>
-      <color attach="background" args={["#94c8dd"]} />
-      <fog attach="fog" args={["#94c8dd", 115, 390]} />
-      <hemisphereLight args={["#ffe8bb", "#486b69", 2.35]} />
+      <color attach="background" args={["#8bb9c7"]} />
+      <fog attach="fog" args={["#a0c4c9", 105, 370]} />
+      <hemisphereLight args={["#fff0c9", "#466461", 1.65]} />
       <directionalLight
         position={[-115, 145, 80]}
-        intensity={3.1}
+        intensity={2.75}
         castShadow
-        shadow-mapSize={[2048, 2048]}
+        shadow-mapSize={[1024, 1024]}
         shadow-camera-left={-155}
         shadow-camera-right={155}
         shadow-camera-top={155}
         shadow-camera-bottom={-155}
-        shadow-bias={-0.00025}
+        shadow-bias={-0.00035}
       />
+      <directionalLight position={[92, 42, -105]} intensity={0.4} color="#92c7de" />
 
       <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
         <planeGeometry args={[FREE_WORLD.bounds * 2, FREE_WORLD.bounds * 2]} />
-        <meshStandardMaterial color="#80966d" roughness={1} />
+        <meshStandardMaterial map={grassMap} color="#97a970" roughness={1} />
       </mesh>
       <mesh position={[0, 0.012, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
         <planeGeometry args={[166, 18]} />
-        <meshStandardMaterial color="#7c8064" roughness={0.98} />
+        <meshStandardMaterial map={asphaltMap} color="#8a8668" roughness={0.94} />
       </mesh>
       {runwayDashes.map((x) => (
         <mesh key={x} position={[x, 0.024, 0]} rotation={[-Math.PI / 2, 0, 0]}>
@@ -83,7 +87,7 @@ export function OpenWorld({ scenario }: { scenario?: Scenario }) {
           <boxGeometry args={visualSize(obstacle.size)} />
           <meshStandardMaterial
             color={obstacleColor(obstacle.id)}
-            roughness={obstacle.id.startsWith("yard") ? 0.58 : 0.88}
+            roughness={obstacle.id.startsWith("yard") ? 0.48 : 0.86}
             metalness={obstacle.id.startsWith("yard") ? 0.18 : 0}
           />
         </mesh>

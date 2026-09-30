@@ -1,9 +1,9 @@
 import { Text } from "@react-three/drei";
 import { useEffect, useMemo } from "react";
-import * as THREE from "three";
 import type { Obstacle, Scenario, V3 } from "../../../packages/contracts/index.ts";
 import { PIZZERIA_WORLD } from "../../../packages/contracts/pizzeria-world.ts";
 import { FreddyModel } from "./FreddyModel.tsx";
+import { createWornCheckerMap } from "./world-materials";
 
 const font = `${import.meta.env.BASE_URL}fonts/IBMPlexMono-Regular.woff`;
 const enu = ([x, y, z]: V3): [number, number, number] => [x, z, -y];
@@ -30,21 +30,7 @@ function Solid({ id, position, size }: { id: string; position: V3; size: V3 }) {
 }
 
 function CheckerFloor() {
-  const checker = useMemo(() => {
-    const pixels = new Uint8Array([
-      27, 35, 52, 255, 215, 211, 190, 255,
-      215, 211, 190, 255, 27, 35, 52, 255,
-    ]);
-    const texture = new THREE.DataTexture(pixels, 2, 2, THREE.RGBAFormat);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.magFilter = THREE.NearestFilter;
-    texture.minFilter = THREE.NearestFilter;
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(11, 9);
-    texture.needsUpdate = true;
-    return texture;
-  }, []);
+  const checker = useMemo(createWornCheckerMap, []);
   useEffect(() => () => checker.dispose(), [checker]);
   return (
     <group>
@@ -113,7 +99,10 @@ function Stage() {
     <group>
       <mesh position={[20.25, 3.2, 0]}><boxGeometry args={[0.08, 4.9, 11.8]} /><meshStandardMaterial color="#25152f" roughness={0.86} /></mesh>
       {/* Fabric curtains sit against the collidable stage backdrop and platform. */}
-      {[-4.9, 4.9].map((z) => <mesh key={z} position={[18.4, 3.1, z]}><boxGeometry args={[4.1, 4.6, 0.48]} /><meshStandardMaterial color="#8d274b" roughness={0.78} /></mesh>)}
+      {[-4.9, 4.9].map((z) => <group key={z} position={[18.4, 3.1, z]}>
+        <mesh><boxGeometry args={[4.1, 4.6, 0.48]} /><meshStandardMaterial color="#6e183a" roughness={0.92} /></mesh>
+        {[-1.35, -0.45, 0.45, 1.35].map((fold) => <mesh key={fold} position={[0.01, 0, fold]}><boxGeometry args={[0.06, 4.45, 0.12]} /><meshStandardMaterial color="#a62d52" roughness={0.82} /></mesh>)}
+      </group>)}
       <Text font={font} position={[13.18, 4.92, 0]} rotation={[0, -Math.PI / 2, 0]} fontSize={0.42} color="#f9d567" anchorX="center">FREDDY FAZBEAR'S PIZZA</Text>
       <FreddyModel />
     </group>
@@ -136,12 +125,14 @@ export function PizzeriaWorld({ scenario }: { scenario?: Scenario }) {
   );
   return (
     <>
-      <color attach="background" args={["#0c1021"]} />
-      <fog attach="fog" args={["#0c1021", 20, 68]} />
-      <ambientLight intensity={1.8} color="#f5d8bd" />
-      <hemisphereLight args={["#f0d7c1", "#514d72", 1.5]} />
-      <directionalLight position={[-12, 15, 8]} intensity={2.1} color="#fff0d6" />
-      <pointLight position={[15, 4.4, 0]} intensity={16} distance={20} decay={2} color="#ffc15c" />
+      <color attach="background" args={["#090d1b"]} />
+      <fog attach="fog" args={["#10142a", 18, 62]} />
+      <ambientLight intensity={0.52} color="#b8b4d5" />
+      <hemisphereLight args={["#4c4d72", "#161526", 0.7]} />
+      <directionalLight position={[-12, 15, 8]} intensity={1.3} color="#bdcdea" castShadow shadow-mapSize={[1024, 1024]} shadow-camera-left={-28} shadow-camera-right={28} shadow-camera-top={25} shadow-camera-bottom={-25} shadow-bias={-0.0004} />
+      <pointLight position={[15, 4.4, 0]} intensity={20} distance={19} decay={2} color="#ffb95a" />
+      <pointLight position={[1, 3.6, -13]} intensity={7} distance={13} decay={2} color="#55bfd4" />
+      <pointLight position={[-12, 3.1, 6]} intensity={5} distance={11} decay={2} color="#7868c5" />
       <CheckerFloor />
       <Ceiling />
       {solids.map((solid: Obstacle) => <Solid key={solid.id} {...solid} />)}
